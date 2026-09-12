@@ -1,0 +1,228 @@
+services:
+  - type: web
+    name: dietbot-api
+    runtime: docker
+    region: singapore
+    healthCheckPath: /health/live
+    dockerCommand: sh -c 'uvicorn app.main:app --host 0.0.0.0 --port $PORT'
+    preDeployCommand: alembic upgrade head && python scripts/build_knowledge_base.py --replace
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: dietbot-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          name: dietbot-redis
+          type: keyvalue
+          property: connectionString
+      - key: WHATSAPP_TOKEN
+        sync: false
+      - key: WHATSAPP_PHONE_NUMBER_ID
+        sync: false
+      - key: WHATSAPP_VERIFY_TOKEN
+        generateValue: true
+      - key: WHATSAPP_APP_SECRET
+        sync: false
+      - key: WHATSAPP_API_VERSION
+        value: v21.0
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL_CHAT
+        value: gemini-2.5-flash-lite
+      - key: GEMINI_MODEL_DIET_PLAN
+        value: gemini-2.5-flash
+      - key: RAZORPAY_KEY_ID
+        sync: false
+      - key: RAZORPAY_KEY_SECRET
+        sync: false
+      - key: RAZORPAY_WEBHOOK_SECRET
+        sync: false
+      - key: SUBSCRIPTION_PRICE_INR
+        value: "499"
+      - key: SUBSCRIPTION_DAYS
+        value: "21"
+      - key: KNOWLEDGE_TOP_K_DIET
+        value: "10"
+      - key: KNOWLEDGE_TOP_K_QA
+        value: "8"
+      - key: KNOWLEDGE_TOP_K_EXERCISE
+        value: "5"
+      - key: KNOWLEDGE_AUTHORITATIVE_QUERY_EXPANSIONS
+        value: "4"
+      - key: KNOWLEDGE_MIN_AUTHORITATIVE_RESULTS
+        value: "2"
+      - key: KNOWLEDGE_MIN_SIMILARITY
+        value: "0.25"
+      - key: KNOWLEDGE_MIN_AUTHORITATIVE_SCORE
+        value: "0.50"
+      - key: REQUIRE_HEALTH_CONSENT
+        value: "true"
+      - key: CONVERSATION_LOCK_SECONDS
+        value: "900"
+      - key: WORKER_HEARTBEAT_REQUIRED
+        value: "true"
+      - key: WORKER_HEARTBEAT_KEY
+        value: dietbot:worker:heartbeat
+      - key: BYPASS_SUBSCRIPTION
+        value: "false"
+
+  - type: worker
+    name: dietbot-worker
+    runtime: docker
+    region: singapore
+    dockerCommand: arq app.worker.WorkerSettings
+    envVars:
+      - key: ENVIRONMENT
+        fromService:
+          name: dietbot-api
+          type: web
+          envVarKey: ENVIRONMENT
+      - key: DATABASE_URL
+        fromDatabase:
+          name: dietbot-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          name: dietbot-redis
+          type: keyvalue
+          property: connectionString
+      - key: WHATSAPP_TOKEN
+        fromService:
+          name: dietbot-api
+          type: web
+          envVarKey: WHATSAPP_TOKEN
+      - key: WHATSAPP_PHONE_NUMBER_ID
+        fromService:
+          name: dietbot-api
+          type: web
+          envVarKey: WHATSAPP_PHONE_NUMBER_ID
+      - key: WHATSAPP_VERIFY_TOKEN
+        fromService:
+          name: dietbot-api
+          type: web
+          envVarKey: WHATSAPP_VERIFY_TOKEN
+      - key: WHATSAPP_APP_SECRET
+        fromService:
+          name: dietbot-api
+          type: web
+          envVarKey: WHATSAPP_APP_SECRET
+      - key: WHATSAPP_API_VERSION
+        fromService:
+          name: dietbot-api
+          type: web
+          envVarKey: WHATSAPP_API_VERSION
+      - key: GEMINI_API_KEY
+        fromService:
+          name: dietbot-api
+          type: web
+          envVarKey: GEMINI_API_KEY
+      - key: GEMINI_MODEL_CHAT
+        fromService:
+          name: dietbot-api
+          type: web
+          envVarKey: GEMINI_MODEL_CHAT
+      - key: GEMINI_MODEL_DIET_PLAN
+        fromService:
+          name: dietbot-api
+          type: web
+          envVarKey: GEMINI_MODEL_DIET_PLAN
+      - key: RAZORPAY_KEY_ID
+        fromService:
+          name: dietbot-api
+          type: web
+          envVarKey: RAZORPAY_KEY_ID
+      - key: RAZORPAY_KEY_SECRET
+        fromService:
+          name: dietbot-api
+          type: web
+          envVarKey: RAZORPAY_KEY_SECRET
+      - key: RAZORPAY_WEBHOOK_SECRET
+        fromService:
+          name: dietbot-api
+          type: web
+          envVarKey: RAZORPAY_WEBHOOK_SECRET
+      - key: SUBSCRIPTION_PRICE_INR
+        fromService:
+          name: dietbot-api
+          type: web
+          envVarKey: SUBSCRIPTION_PRICE_INR
+      - key: SUBSCRIPTION_DAYS
+        fromService:
+          name: dietbot-api
+          type: web
+          envVarKey: SUBSCRIPTION_DAYS
+      - key: KNOWLEDGE_TOP_K_DIET
+        fromService:
+          name: dietbot-api
+          type: web
+          envVarKey: KNOWLEDGE_TOP_K_DIET
+      - key: KNOWLEDGE_TOP_K_QA
+        fromService:
+          name: dietbot-api
+          type: web
+          envVarKey: KNOWLEDGE_TOP_K_QA
+      - key: KNOWLEDGE_TOP_K_EXERCISE
+        fromService:
+          name: dietbot-api
+          type: web
+          envVarKey: KNOWLEDGE_TOP_K_EXERCISE
+      - key: KNOWLEDGE_AUTHORITATIVE_QUERY_EXPANSIONS
+        fromService:
+          name: dietbot-api
+          type: web
+          envVarKey: KNOWLEDGE_AUTHORITATIVE_QUERY_EXPANSIONS
+      - key: KNOWLEDGE_MIN_AUTHORITATIVE_RESULTS
+        fromService:
+          name: dietbot-api
+          type: web
+          envVarKey: KNOWLEDGE_MIN_AUTHORITATIVE_RESULTS
+      - key: KNOWLEDGE_MIN_SIMILARITY
+        fromService:
+          name: dietbot-api
+          type: web
+          envVarKey: KNOWLEDGE_MIN_SIMILARITY
+      - key: KNOWLEDGE_MIN_AUTHORITATIVE_SCORE
+        fromService:
+          name: dietbot-api
+          type: web
+          envVarKey: KNOWLEDGE_MIN_AUTHORITATIVE_SCORE
+      - key: REQUIRE_HEALTH_CONSENT
+        fromService:
+          name: dietbot-api
+          type: web
+          envVarKey: REQUIRE_HEALTH_CONSENT
+      - key: CONVERSATION_LOCK_SECONDS
+        fromService:
+          name: dietbot-api
+          type: web
+          envVarKey: CONVERSATION_LOCK_SECONDS
+      - key: WORKER_HEARTBEAT_REQUIRED
+        fromService:
+          name: dietbot-api
+          type: web
+          envVarKey: WORKER_HEARTBEAT_REQUIRED
+      - key: WORKER_HEARTBEAT_KEY
+        fromService:
+          name: dietbot-api
+          type: web
+          envVarKey: WORKER_HEARTBEAT_KEY
+      - key: BYPASS_SUBSCRIPTION
+        fromService:
+          name: dietbot-api
+          type: web
+          envVarKey: BYPASS_SUBSCRIPTION
+
+  - type: keyvalue
+    name: dietbot-redis
+    region: singapore
+    ipAllowList: []
+    persistenceMode: off
+
+databases:
+  - name: dietbot-db
+    region: singapore
+    databaseName: dietbot
+    postgresMajorVersion: "16"
