@@ -1,0 +1,31 @@
+{
+  "source_name": "WHO/CDC physical activity guidance",
+  "source_type": "official_guideline_summary",
+  "source_role": "authoritative",
+  "authority": 0.98,
+  "sources": [
+    {
+      "topic": "adults_18_64",
+      "facts": [
+        "Adults should get at least 150–300 minutes of moderate-intensity aerobic physical activity per week, or 75–150 minutes of vigorous-intensity activity, or an equivalent combination.",
+        "Adults should do muscle-strengthening activities involving all major muscle groups on 2 or more days per week.",
+        "Inactive people should start with smaller amounts and gradually increase duration, frequency and intensity.",
+        "Some physical activity is better than none."
+      ],
+      "source_urls": [
+        "https://www.who.int/europe/news-room/fact-sheets/item/physical-activity",
+        "https://www.cdc.gov/physical-activity-basics/guidelines/adults.html"
+      ]
+    },
+    {
+      "topic": "older_adults",
+      "facts": [
+        "Adults 65+ have the same general aerobic and strengthening targets, with added emphasis on functional balance and strength for people with poor mobility."
+      ],
+      "source_urls": [
+        "https://www.who.int/initiatives/behealthy/physical-activity",
+        "https://www.cdc.gov/physical-activity-basics/guidelines/index.html"
+      ]
+    }
+  ]
+}

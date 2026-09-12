@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Users · DietBot Admin{% endblock %}
+{% block content %}
+<main>
+  <div class="toolbar">
+    <div>
+      <h1>Onboarded Users</h1>
+      <div class="muted">{{ total }} onboarded user(s)</div>
+    </div>
+    <form method="get" action="/admin">
+      <input name="search" value="{{ search }}" placeholder="Search name or phone">
+      <button type="submit">Search</button>
+    </form>
+  </div>
+  <div class="card">
+    <table>
+      <thead><tr><th>User</th><th>Phone</th><th>Profile</th><th>Goal</th><th>Subscription</th><th>Created</th></tr></thead>
+      <tbody>
+      {% for user in users %}
+        <tr>
+          <td><a href="/admin/users/{{ user.id }}">{{ user.name or 'Unnamed' }}</a><br><span class="muted">#{{ user.id }}</span></td>
+          <td>{{ user.phone_number }}</td>
+          <td>{{ user.age or '—' }} · {{ user.gender or '—' }}<br>{{ user.height_cm or '—' }} cm · {{ user.weight_kg or '—' }} kg</td>
+          <td>{{ user.goal or '—' }}<br>{{ user.diet_preference or '—' }}</td>
+          <td>{% if user.subscription_active %}<span class="pill">Active</span>{% else %}<span class="pill">Inactive</span>{% endif %}</td>
+          <td>{{ user.created_at }}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="6" class="muted">No onboarded users found.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <div class="pagination">
+      {% if page > 1 %}<a href="/admin?page={{ page - 1 }}&search={{ search|urlencode }}">← Previous</a>{% endif %}
+      <span class="muted">Page {{ page }} of {{ total_pages }}</span>
+      {% if page < total_pages %}<a href="/admin?page={{ page + 1 }}&search={{ search|urlencode }}">Next →</a>{% endif %}
+    </div>
+  </div>
+</main>
+{% endblock %}

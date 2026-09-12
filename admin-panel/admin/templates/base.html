@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}DietBot Admin{% endblock %}</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f4f6f8; color: #17202a; }
+    header { background: #111827; color: #fff; padding: 16px 24px; display:flex; align-items:center; justify-content:space-between; }
+    main { max-width: 1280px; margin: 28px auto; padding: 0 18px; }
+    a { color: #1d4ed8; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .card { background: #fff; border:1px solid #e5e7eb; border-radius: 12px; padding: 18px; box-shadow: 0 2px 10px rgba(15,23,42,.04); }
+    .toolbar { display:flex; gap:10px; align-items:center; justify-content:space-between; flex-wrap:wrap; margin-bottom:16px; }
+    input, button { border:1px solid #d1d5db; border-radius:8px; padding:9px 11px; font:inherit; }
+    button { background:#111827; color:#fff; cursor:pointer; }
+    .danger { background:#b91c1c; }
+    table { width:100%; border-collapse:collapse; }
+    th, td { padding:10px 8px; border-bottom:1px solid #eef0f2; text-align:left; vertical-align:top; }
+    th { font-size:12px; text-transform:uppercase; letter-spacing:.04em; color:#6b7280; }
+    .pill { display:inline-block; border-radius:999px; padding:3px 8px; font-size:12px; background:#eef2ff; }
+    .muted { color:#6b7280; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:14px; }
+    pre { white-space:pre-wrap; word-break:break-word; background:#f8fafc; padding:12px; border-radius:8px; }
+    .error { background:#fee2e2; color:#991b1b; padding:10px 12px; border-radius:8px; margin-bottom:12px; }
+    .login-wrap { max-width:420px; margin:70px auto; }
+    .field { margin-bottom:14px; }
+    .field label { display:block; margin-bottom:6px; font-weight:600; }
+    .field input { width:100%; }
+    .pagination { display:flex; gap:8px; margin-top:16px; }
+  </style>
+</head>
+<body>
+<header>
+  <strong>DietBot Admin</strong>
+  {% if request.url.path.startswith('/admin') and request.url.path != '/admin/login' %}
+  <form action="/admin/logout" method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button class="danger" type="submit">Logout</button>
+  </form>
+  {% endif %}
+</header>
+{% block content %}{% endblock %}
+</body>
+</html>

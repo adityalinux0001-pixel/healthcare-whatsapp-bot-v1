@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}User {{ user.id }} · DietBot Admin{% endblock %}
+{% block content %}
+<main>
+  <p><a href="/admin">← Back to users</a></p>
+  <h1>{{ user.name or 'Unnamed User' }}</h1>
+  <div class="grid">
+    <div class="card"><strong>Contact</strong><p>{{ user.phone_number }}</p><p>User #{{ user.id }}</p></div>
+    <div class="card"><strong>Profile</strong><p>{{ user.age or '—' }} · {{ user.gender or '—' }}</p><p>{{ user.height_cm or '—' }} cm · {{ user.weight_kg or '—' }} kg</p><p>{{ user.activity_level or '—' }}</p></div>
+    <div class="card"><strong>Goal & Diet</strong><p>{{ user.goal or '—' }}</p><p>{{ user.diet_preference or '—' }}</p></div>
+  </div>
+  <div class="grid" style="margin-top:14px">
+    <div class="card"><strong>Allergies</strong><pre>{{ user.allergies or 'None reported' }}</pre></div>
+    <div class="card"><strong>Medical Conditions</strong><pre>{{ user.medical_conditions or 'None reported' }}</pre></div>
+    <div class="card"><strong>Food Dislikes</strong><pre>{{ user.food_dislikes or 'None reported' }}</pre></div>
+  </div>
+  <div class="card" style="margin-top:14px">
+    <h2>Subscriptions</h2>
+    <table><thead><tr><th>Status</th><th>Amount</th><th>Start</th><th>End</th><th>Payment</th></tr></thead>
+      <tbody>{% for item in subscriptions %}<tr><td>{{ item.status }}</td><td>₹{{ item.amount_inr }}</td><td>{{ item.start_date }}</td><td>{{ item.end_date }}</td><td>{{ item.razorpay_payment_id or '—' }}</td></tr>{% else %}<tr><td colspan="5" class="muted">No subscriptions found.</td></tr>{% endfor %}</tbody>
+    </table>
+  </div>
+  <div class="card" style="margin-top:14px">
+    <h2>Recent Diet Plans</h2>
+    <table><thead><tr><th>Day</th><th>Date</th><th>Status</th><th>Attempts</th><th>Sent</th><th>Content</th></tr></thead>
+      <tbody>{% for plan in diet_plans %}<tr><td>{{ plan.day_number }}</td><td>{{ plan.plan_date }}</td><td>{{ plan.delivery_status }}</td><td>{{ plan.send_attempts }}</td><td>{{ plan.sent_at or '—' }}</td><td style="max-width:420px"><pre>{{ plan.content }}</pre></td></tr>{% else %}<tr><td colspan="6" class="muted">No diet plans found.</td></tr>{% endfor %}</tbody>
+    </table>
+  </div>
+</main>
+{% endblock %}

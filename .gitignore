@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.env
+backups/
+*.log
+.venv/
+.pytest_cache/
+
+# Generated RAG index
+data/knowledge/chroma/

@@ -1,0 +1,45 @@
+{
+  "purpose": "Source registry for the production knowledge base. Only sources with a clear authority role should be used as evidence for health guidance.",
+  "sources": [
+    {
+      "source_name": "ICMR-NIN Dietary Guidelines for Indians 2024",
+      "role": "authoritative",
+      "topic": "dietary_guidance",
+      "url": "https://www.nin.res.in/dietaryguidelines/pdfjs/locale/DGI_2024.pdf",
+      "publication": "2024",
+      "license_status": "REVIEW_REQUIRED_FOR_ELECTRONIC_PRODUCT_USE"
+    },
+    {
+      "source_name": "Indian Food Composition Tables (IFCT) 2017",
+      "role": "authoritative",
+      "topic": "food_composition",
+      "url": "https://www.nin.res.in/ebooks/IFCT2017.pdf",
+      "publication": "2017",
+      "license_status": "REVIEW_REQUIRED_BEFORE_BUNDLING_OR_REPRODUCTION"
+    },
+    {
+      "source_name": "ICMR-NIN Recommended Dietary Allowances / Estimated Average Requirements for Indians",
+      "role": "authoritative",
+      "topic": "nutrient_requirements",
+      "url": "https://www.nin.res.in/RDA_Full_Report_2024.html",
+      "publication": "2024 site listing; report based on expert group recommendations",
+      "license_status": "REVIEW_REQUIRED_BEFORE_BUNDLING_OR_REPRODUCTION"
+    },
+    {
+      "source_name": "WHO Physical Activity Guidelines",
+      "role": "authoritative",
+      "topic": "exercise",
+      "url": "https://www.who.int/initiatives/behealthy/physical-activity",
+      "publication": "WHO guidance",
+      "license_status": "REVIEW_SOURCE_TERMS_BEFORE_REPRODUCTION"
+    },
+    {
+      "source_name": "CDC Physical Activity Guidelines for Adults",
+      "role": "authoritative_supporting",
+      "topic": "exercise",
+      "url": "https://www.cdc.gov/physical-activity-basics/guidelines/adults.html",
+      "publication": "CDC guidance",
+      "license_status": "REVIEW_SOURCE_TERMS_BEFORE_REPRODUCTION"
+    }
+  ]
+}
