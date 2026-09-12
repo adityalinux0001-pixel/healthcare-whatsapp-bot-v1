@@ -1,3 +1,5 @@
+
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -7,6 +9,24 @@ class Settings(BaseSettings):
     environment: str = "development"
 
     database_url: str
+
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def normalize_database_url(cls, value: str) -> str:
+        if not isinstance(value, str):
+            return value
+
+        # Render/PostgreSQL commonly supplies one of these URL formats.
+        # The application and Alembic use SQLAlchemy's async engine,
+        # so normalize them to the asyncpg driver.
+        if value.startswith("postgres://"):
+            return "postgresql+asyncpg://" + value[len("postgres://"):]
+
+        if value.startswith("postgresql://"):
+            return "postgresql+asyncpg://" + value[len("postgresql://"):]
+
+        return value
+
     redis_url: str = "redis://localhost:6379/0"
 
     whatsapp_token: str
@@ -26,7 +46,6 @@ class Settings(BaseSettings):
     subscription_price_inr: int = 499
     subscription_days: int = 21
 
-
     knowledge_chroma_dir: str = "./data/knowledge/chroma"
     knowledge_embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
     knowledge_top_k_diet: int = 10
@@ -36,15 +55,18 @@ class Settings(BaseSettings):
     knowledge_min_authoritative_results: int = 2
     knowledge_min_similarity: float = 0.25
     knowledge_min_authoritative_score: float = 0.50
+
     worker_heartbeat_required: bool = False
     worker_heartbeat_key: str = "dietbot:worker:heartbeat"
 
-    # Production safety gate. Keep False for local/dev compatibility; set True in production.
+    # Production safety gate.
+    # Keep False for local/dev compatibility; set True in production.
     require_health_consent: bool = False
-    conversation_lock_seconds: int = 900
 
+    conversation_lock_seconds: int = 900
 
     bypass_subscription: bool = False
 
 
 settings = Settings()
+
