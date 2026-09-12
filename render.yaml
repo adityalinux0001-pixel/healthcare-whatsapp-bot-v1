@@ -4,7 +4,6 @@ services:
     runtime: docker
     region: singapore
     healthCheckPath: /health/live
-    dockerCommand: sh -c 'uvicorn app.main:app --host 0.0.0.0 --port $PORT'
     preDeployCommand: alembic upgrade head
     envVars:
       - key: ENVIRONMENT
