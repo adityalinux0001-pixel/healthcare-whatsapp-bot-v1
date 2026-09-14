@@ -27,6 +27,10 @@ services:
         sync: false
       - key: WHATSAPP_API_VERSION
         value: v21.0
+      - key: WHATSAPP_DAILY_PLAN_TEMPLATE_NAME
+        sync: false
+      - key: WHATSAPP_DAILY_PLAN_TEMPLATE_LANGUAGE_CODE
+        value: en
       - key: GEMINI_API_KEY
         sync: false
       - key: GEMINI_MODEL_CHAT
@@ -113,6 +117,16 @@ services:
           name: dietbot-api
           type: web
           envVarKey: WHATSAPP_API_VERSION
+      - key: WHATSAPP_DAILY_PLAN_TEMPLATE_NAME
+        fromService:
+          name: dietbot-api
+          type: web
+          envVarKey: WHATSAPP_DAILY_PLAN_TEMPLATE_NAME
+      - key: WHATSAPP_DAILY_PLAN_TEMPLATE_LANGUAGE_CODE
+        fromService:
+          name: dietbot-api
+          type: web
+          envVarKey: WHATSAPP_DAILY_PLAN_TEMPLATE_LANGUAGE_CODE
       - key: GEMINI_API_KEY
         fromService:
           name: dietbot-api

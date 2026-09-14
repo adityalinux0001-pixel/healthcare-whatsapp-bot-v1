@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     whatsapp_verify_token: str
     whatsapp_app_secret: str
     whatsapp_api_version: str = "v21.0"
+    whatsapp_daily_plan_template_name: str = ""
+    whatsapp_daily_plan_template_language_code: str = "en"
 
     gemini_api_key: str
     gemini_model_chat: str = "gemini-2.5-flash-lite"
