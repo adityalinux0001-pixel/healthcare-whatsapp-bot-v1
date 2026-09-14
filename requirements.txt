@@ -18,6 +18,6 @@ structlog==26.1.0
 # RAG / knowledge base
 chromadb==1.5.9
 sentence-transformers==5.7.0
-torch==2.9.1+cpu
+torch==2.9.1
 pypdf==6.17.0
 pandas==2.3.3
