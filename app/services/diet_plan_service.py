@@ -9,10 +9,11 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from tenacity import RetryError
 
+from app.config import settings
 from app.database import AsyncSessionLocal
-from app.models import User, DietPlan
+from app.models import User, DietPlan, Message
 from app.llm.gemini_client import generate_diet_plan
-from app.whatsapp.client import send_text_message
+from app.whatsapp.client import send_text_message, send_template_message
 from app.utils.logging_config import logger
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -68,6 +69,16 @@ async def _claim_today_plan(db, user: User, subscription_id: int) -> tuple[DietP
     return plan, True
 
 
+async def _last_inbound_at(db, user_id: int) -> datetime | None:
+    """Return the latest persisted inbound WhatsApp message time for this user."""
+    return await db.scalar(
+        select(Message.created_at)
+        .where(Message.user_id == user_id, Message.role == "user")
+        .order_by(Message.created_at.desc())
+        .limit(1)
+    )
+
+
 async def _claim_delivery(db, plan_id: int) -> tuple[DietPlan | None, bool]:
     plan = await db.scalar(select(DietPlan).where(DietPlan.id == plan_id).with_for_update())
     if not plan or not plan.content:
@@ -103,11 +114,58 @@ async def _send_plan(user: User, plan: DietPlan, *, prefer_text: bool = False) -
         content = current.content
         day_number = current.day_number
         plan_id = current.id
+        last_inbound_at = await _last_inbound_at(db, user.id)
+
+    # Free-form WhatsApp text is valid only inside the 24-hour customer-service
+    # window. When it is closed (such as a proactive 06:00 IST daily send), use
+    # the user's approved utility template instead.
+    within_service_window = bool(
+        last_inbound_at
+        and (datetime.now(timezone.utc) - last_inbound_at.astimezone(timezone.utc)).total_seconds() < 24 * 60 * 60
+    )
+    use_text = within_service_window
+    template_name = settings.whatsapp_daily_plan_template_name.strip()
+
+    if not use_text and not template_name:
+        error = (
+            "WhatsApp 24-hour service window is closed and "
+            "WHATSAPP_DAILY_PLAN_TEMPLATE_NAME is not configured."
+        )
+        await _mark_delivery(plan_id, "failed", error=error)
+        logger.error(
+            "diet_plan_delivery_blocked_template_missing",
+            user_id=user.id,
+            day_number=day_number,
+        )
+        return
 
     try:
-        # All daily plans are sent as normal WhatsApp text messages.
-        # No Meta template is required for plan delivery.
-        response = await send_text_message(user.phone_number, content)
+        if use_text:
+            response = await send_text_message(user.phone_number, content)
+        else:
+            # Template created in Meta: `daily_diet_plan`
+            # {{1}} = day number, {{2}} = the rendered plan body.
+            # The template itself already introduces the day number, while the
+            # stored free-form content starts with its own `🌿 Day N...` heading.
+            # Remove only that duplicate heading for template delivery; every
+            # meal/exercise/hydration/safety line remains exactly as generated.
+            template_content = content
+            first_line, separator, remainder = content.partition("\n")
+            if first_line.strip().replace("*", "").startswith("🌿 Day ") and separator:
+                template_content = remainder.lstrip("\n")
+
+            response = await send_template_message(
+                user.phone_number,
+                template_name,
+                settings.whatsapp_daily_plan_template_language_code,
+                components=[{
+                    "type": "body",
+                    "parameters": [
+                        {"type": "text", "text": str(day_number)},
+                        {"type": "text", "text": template_content},
+                    ],
+                }],
+            )
     except RetryError as exc:
         root = exc.last_attempt.exception()
         # Transport/server failures can have an ambiguous outcome. Do not blindly
