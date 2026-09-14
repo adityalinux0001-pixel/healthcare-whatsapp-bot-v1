@@ -28,6 +28,35 @@ def _canonical_day_from_local_date(local_date) -> datetime:
     return datetime.combine(local_date, time.min, tzinfo=IST).astimezone(timezone.utc)
 
 
+def _template_plan_content(content: str, max_chars: int = 880) -> str:
+    """Create a compact single-line version for WhatsApp template delivery.
+
+    The complete generated plan remains unchanged in DietPlan.content.
+    This helper only formats the version sent through the approved
+    WhatsApp template.
+    """
+    first_line, separator, remainder = content.partition("\n")
+
+    if first_line.strip().replace("*", "").startswith("🌿 Day ") and separator:
+        content = remainder.lstrip("\n")
+
+    # The general-wellness disclaimer is intentionally omitted from the
+    # compact template version. The full saved plan still contains it.
+    disclaimer_marker = "⚠️ This plan is for general wellness."
+    if disclaimer_marker in content:
+        content = content.split(disclaimer_marker, 1)[0].rstrip()
+
+    # WhatsApp template parameters cannot contain newlines or tabs.
+    content = " ".join(content.split())
+
+    # Keep the dynamic parameter comfortably below Meta's 1024-character
+    # total template-body limit, leaving room for the template's own text.
+    if len(content) > max_chars:
+        content = content[: max_chars - 3].rsplit(" ", 1)[0].rstrip() + "..."
+
+    return content
+
+
 async def _recent_meals(db, user_id: int) -> list[str]:
     result = await db.execute(
         select(DietPlan.content)
@@ -92,7 +121,13 @@ async def _claim_delivery(db, plan_id: int) -> tuple[DietPlan | None, bool]:
     return plan, True
 
 
-async def _mark_delivery(plan_id: int, status: str, *, error: str | None = None, provider_message_id: str | None = None) -> None:
+async def _mark_delivery(
+    plan_id: int,
+    status: str,
+    *,
+    error: str | None = None,
+    provider_message_id: str | None = None,
+) -> None:
     async with AsyncSessionLocal() as db:
         plan = await db.get(DietPlan, plan_id)
         if not plan:
@@ -121,7 +156,8 @@ async def _send_plan(user: User, plan: DietPlan, *, prefer_text: bool = False) -
     # the user's approved utility template instead.
     within_service_window = bool(
         last_inbound_at
-        and (datetime.now(timezone.utc) - last_inbound_at.astimezone(timezone.utc)).total_seconds() < 24 * 60 * 60
+        and (datetime.now(timezone.utc) - last_inbound_at.astimezone(timezone.utc)).total_seconds()
+        < 24 * 60 * 60
     )
     use_text = within_service_window
     template_name = settings.whatsapp_daily_plan_template_name.strip()
@@ -144,15 +180,13 @@ async def _send_plan(user: User, plan: DietPlan, *, prefer_text: bool = False) -
             response = await send_text_message(user.phone_number, content)
         else:
             # Template created in Meta: `daily_diet_plan`
-            # {{1}} = day number, {{2}} = the rendered plan body.
-            # The template itself already introduces the day number, while the
-            # stored free-form content starts with its own `🌿 Day N...` heading.
-            # Remove only that duplicate heading for template delivery; every
-            # meal/exercise/hydration/safety line remains exactly as generated.
-            template_content = content
-            first_line, separator, remainder = content.partition("\n")
-            if first_line.strip().replace("*", "").startswith("🌿 Day ") and separator:
-                template_content = remainder.lstrip("\n")
+            # {{1}} = day number, {{2}} = compact rendered plan body.
+            #
+            # The stored DietPlan.content remains the complete generated plan.
+            # Only the template-delivered version is compacted because Meta
+            # rejects template parameters containing newlines/tabs and the
+            # complete plan can exceed the template's 1024-character limit.
+            template_content = _template_plan_content(content)
 
             response = await send_template_message(
                 user.phone_number,
@@ -168,6 +202,7 @@ async def _send_plan(user: User, plan: DietPlan, *, prefer_text: bool = False) -
             )
     except RetryError as exc:
         root = exc.last_attempt.exception()
+
         # Transport/server failures can have an ambiguous outcome. Do not blindly
         # resend an unknown external side effect; mark it for reconciliation.
         if isinstance(root, (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError)):
@@ -178,17 +213,29 @@ async def _send_plan(user: User, plan: DietPlan, *, prefer_text: bool = False) -
             )
             logger.error("diet_plan_delivery_unknown", user_id=user.id, day_number=day_number)
             return
+
         if isinstance(root, httpx.HTTPStatusError) and root.response.status_code >= 500:
-            await _mark_delivery(plan_id, "unknown", error=f"WhatsApp server error: {root.response.status_code}")
+            await _mark_delivery(
+                plan_id,
+                "unknown",
+                error=f"WhatsApp server error: {root.response.status_code}",
+            )
             return
+
         await _mark_delivery(plan_id, "failed", error=str(root))
         raise
+
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code >= 500 or exc.response.status_code == 429:
-            await _mark_delivery(plan_id, "unknown", error=f"WhatsApp transport error: {exc.response.status_code}")
+            await _mark_delivery(
+                plan_id,
+                "unknown",
+                error=f"WhatsApp transport error: {exc.response.status_code}",
+            )
         else:
             await _mark_delivery(plan_id, "failed", error=str(exc))
         raise
+
     except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError):
         await _mark_delivery(
             plan_id,
@@ -196,6 +243,7 @@ async def _send_plan(user: User, plan: DietPlan, *, prefer_text: bool = False) -
             error="Ambiguous WhatsApp delivery outcome; manual/provider-status reconciliation required.",
         )
         return
+
     except Exception as exc:
         await _mark_delivery(plan_id, "failed", error=str(exc))
         raise
@@ -205,6 +253,7 @@ async def _send_plan(user: User, plan: DietPlan, *, prefer_text: bool = False) -
         provider_message_id = response.get("messages", [{}])[0].get("id")
     except (AttributeError, IndexError, TypeError):
         pass
+
     await _mark_delivery(plan_id, "sent", provider_message_id=provider_message_id)
 
 
@@ -217,16 +266,20 @@ async def generate_plan_for_user(user_id: int, *, prefer_text: bool = False) -> 
         user: User | None = await db.get(User, user_id)
         if not user or not user.onboarding_complete:
             return
+
         if user.age is not None and user.age < 18:
             logger.warning("daily_plan_skipped_minor", user_id=user_id)
             return
+
         sub = await get_active_subscription(db, user)
         if not sub:
             return
 
         plan, created = await _claim_today_plan(db, user, sub.id)
+
         if plan.delivery_status in {"sent", "unknown"}:
             return
+
         if not created and plan.content:
             await _send_plan(user, plan, prefer_text=prefer_text)
             return
@@ -241,18 +294,25 @@ async def generate_plan_for_user(user_id: int, *, prefer_text: bool = False) -> 
             return
 
         recent = await _recent_meals(db, user_id)
+
         plan_text = await generate_diet_plan(
             user.profile_dict(),
             recent,
             summary=user.conversation_summary,
             day_number=plan.day_number,
         )
+
         plan.content = plan_text
         await db.commit()
         await db.refresh(plan)
 
     await _send_plan(user, plan, prefer_text=prefer_text)
-    logger.info("diet_plan_processed", user_id=user_id, day_number=plan.day_number, created=created)
+    logger.info(
+        "diet_plan_processed",
+        user_id=user_id,
+        day_number=plan.day_number,
+        created=created,
+    )
 
 
 async def revise_today_plan(
@@ -267,11 +327,16 @@ async def revise_today_plan(
         return None
 
     today = _plan_day_utc()
+
     plan = await db.scalar(
         select(DietPlan)
-        .where(DietPlan.user_id == user.id, DietPlan.plan_date == today)
+        .where(
+            DietPlan.user_id == user.id,
+            DietPlan.plan_date == today,
+        )
         .with_for_update()
     )
+
     if not plan or not plan.content:
         return None
 
@@ -290,6 +355,7 @@ async def revise_today_plan(
         return None
 
     recent = await _recent_meals(db, user.id)
+
     plan_text = await generate_diet_plan(
         user.profile_dict(),
         recent,
@@ -306,9 +372,16 @@ async def revise_today_plan(
     plan.send_attempts = 0
     plan.last_send_error = None
     plan.provider_message_id = None
+
     await db.commit()
     await db.refresh(plan)
-    logger.info("today_plan_revised", user_id=user.id, day_number=plan.day_number)
+
+    logger.info(
+        "today_plan_revised",
+        user_id=user.id,
+        day_number=plan.day_number,
+    )
+
     return plan
 
 
@@ -316,22 +389,43 @@ async def generate_and_send_daily_plans() -> None:
     from app.redis_client import get_arq_pool
 
     async with AsyncSessionLocal() as db:
-        result = await db.execute(select(User.id).where(User.onboarding_complete.is_(True), User.age >= 18))
+        result = await db.execute(
+            select(User.id).where(
+                User.onboarding_complete.is_(True),
+                User.age >= 18,
+            )
+        )
         user_ids = [row[0] for row in result.all()]
 
     pool = await get_arq_pool()
+
     for uid in user_ids:
         await pool.enqueue_job("generate_diet_plan_for_user", uid)
+
     logger.info("daily_plan_jobs_queued", count=len(user_ids))
 
 
-async def get_historical_plan(db, user_id: int, *, day_number: int | None = None, local_date=None) -> DietPlan | None:
+async def get_historical_plan(
+    db,
+    user_id: int,
+    *,
+    day_number: int | None = None,
+    local_date=None,
+) -> DietPlan | None:
     if day_number is not None:
         return await db.scalar(
-            select(DietPlan).where(DietPlan.user_id == user_id, DietPlan.day_number == day_number)
+            select(DietPlan).where(
+                DietPlan.user_id == user_id,
+                DietPlan.day_number == day_number,
+            )
         )
+
     if local_date is not None:
         return await db.scalar(
-            select(DietPlan).where(DietPlan.user_id == user_id, DietPlan.plan_date == _canonical_day_from_local_date(local_date))
+            select(DietPlan).where(
+                DietPlan.user_id == user_id,
+                DietPlan.plan_date == _canonical_day_from_local_date(local_date),
+            )
         )
+
     return None
