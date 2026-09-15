@@ -69,6 +69,13 @@ class Settings(BaseSettings):
 
     bypass_subscription: bool = False
 
+    # Admin dashboard (single admin; set these in the same .env as the chatbot).
+    admin_phone: str = ""
+    admin_password_hash: str = ""
+    admin_session_secret: str = ""
+    admin_session_max_age: int = 28800
+    admin_cookie_secure: bool = False
+
 
 settings = Settings()
 

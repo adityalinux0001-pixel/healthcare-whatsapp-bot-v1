@@ -108,6 +108,25 @@ async def handle_incoming_message(
             return
 
         # Consent exists: now it is safe to persist the inbound health/profile message.
+        #
+        # Payment gate: once onboarding is complete, an active subscription is required
+        # before any normal conversation is processed. This check happens before the
+        # inbound message is persisted and before Gemini is called, so unpaid users
+        # cannot consume normal chatbot functionality.
+        #
+        # Safety/red-flag handling above intentionally remains available regardless of
+        # payment status so genuine emergency messages still receive a safety response.
+        if user.onboarding_complete:
+            subscription = await get_active_subscription(db, user)
+            if not subscription:
+                await prompt_payment(db, user)
+                logger.info(
+                    "conversation_payment_required",
+                    user_id=user.id,
+                    phone=mask_identifier(phone),
+                )
+                return
+
         db.add(Message(
             user_id=user.id,
             role="user",
@@ -116,8 +135,6 @@ async def handle_incoming_message(
         ))
         await db.commit()
 
-        # Subscription is intentionally checked only after onboarding is complete.
-        # Users must be allowed to finish their profile before we ask for payment.
         history = await _recent_history(db, user, exclude_whatsapp_message_id=wa_message_id)
         summary = user.conversation_summary
 
