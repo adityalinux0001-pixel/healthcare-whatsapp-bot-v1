@@ -108,6 +108,25 @@ async def handle_incoming_message(
             return
 
         # Consent exists: now it is safe to persist the inbound health/profile message.
+        #
+        # Payment gate: once onboarding is complete, an active subscription is required
+        # before any normal conversation is processed. This check happens before the
+        # inbound message is persisted and before Gemini is called, so unpaid users
+        # cannot consume normal chatbot functionality.
+        #
+        # Safety/red-flag handling above intentionally remains available regardless of
+        # payment status so genuine emergency messages still receive a safety response.
+        if user.onboarding_complete:
+            subscription = await get_active_subscription(db, user)
+            if not subscription:
+                await prompt_payment(db, user)
+                logger.info(
+                    "conversation_payment_required",
+                    user_id=user.id,
+                    phone=mask_identifier(phone),
+                )
+                return
+
         db.add(Message(
             user_id=user.id,
             role="user",
@@ -116,8 +135,6 @@ async def handle_incoming_message(
         ))
         await db.commit()
 
-        # Subscription is intentionally checked only after onboarding is complete.
-        # Users must be allowed to finish their profile before we ask for payment.
         history = await _recent_history(db, user, exclude_whatsapp_message_id=wa_message_id)
         summary = user.conversation_summary
 
@@ -147,40 +164,75 @@ async def handle_incoming_message(
 
 
 
-def _deterministic_health_answers(text: str, missing_fields: list[str]) -> dict[str, str]:
-    """Capture explicit no/none health answers even when Gemini skips the tool call.
+def _latest_assistant_context(history: list[dict] | None) -> str:
+    """Return the latest assistant turn so short replies can be interpreted in context."""
+    for turn in reversed(history or []):
+        if turn.get("role") == "assistant":
+            return re.sub(r"\s+", " ", str(turn.get("content") or "")).strip()
+    return ""
 
-    Health completion is state-critical: an explicit "I don't have any allergies and
-    medical conditions" must close both onboarding requirements deterministically.
+
+def _deterministic_health_answers(
+    text: str,
+    missing_fields: list[str],
+    history: list[dict] | None = None,
+) -> dict[str, str]:
+    """Capture only high-confidence context-dependent health answers.
+
+    Gemini is the primary semantic extractor. This fallback exists for state-critical
+    answers that are obvious from the immediately preceding onboarding question, such
+    as a standalone ``no`` after "Do you have any allergies or medical conditions?".
+    It deliberately does not treat arbitrary ``no``/``nothing`` messages as health data.
     """
     normalized = re.sub(r"\s+", " ", text.casefold()).strip()
+    assistant_text = _latest_assistant_context(history).casefold()
     result: dict[str, str] = {}
 
-    no_prefix = r"(?:no|none|don't have|dont have|do not have|without|never had)"
+    if not normalized or not assistant_text:
+        return result
+
+    allergy_context = bool(re.search(
+        r"\b(?:allerg(?:y|ies)|allergen(?:s)?|food sensitiv(?:ity|ities))\b",
+        assistant_text,
+    ))
+    medical_context = bool(re.search(
+        r"\b(?:medical (?:condition|conditions|issue|issues)|health (?:condition|conditions|issue|issues)|"
+        r"disease(?:s)?|health problem(?:s)?)\b",
+        assistant_text,
+    ))
+    combined_health_context = allergy_context and medical_context
+
+    # These are intentionally conservative high-confidence negative answers. Words such
+    # as "maybe", "I think", and "not really" are not treated as a definitive denial.
+    negative_answer = bool(re.fullmatch(
+        r"(?:no|nope|nah|none|nothing|nothing that i know of|"
+        r"i (?:do not|don't|dont) have (?:any|anything)|"
+        r"i (?:have|ve) no(?:thing)?(?: at all)?|"
+        r"there (?:is|are) none|"
+        r"no issues?|no problems?|nothing to report)",
+        normalized,
+    ))
+
+    def explicit_negative(term_pattern: str) -> bool:
+        return bool(re.search(
+            rf"(?:\b(?:no|none|without|don't have|dont have|do not have|never had)\b[^.?!;]*"
+            rf"\b{term_pattern}\b|\b{term_pattern}\b[^.?!;]*\b(?:no|none|without|don't have|dont have|do not have|never had)\b)",
+            normalized,
+        ))
+
     allergy_term = r"(?:allerg(?:y|ies)|allergen(?:s)?)"
-    medical_term = r"(?:medical (?:condition|conditions)|health condition(?:s)?|disease(?:s)?)"
+    medical_term = r"(?:medical (?:condition|conditions|issue|issues)|health (?:condition|conditions|issue|issues)|disease(?:s)?|health problem(?:s)?)"
 
-    if "allergies" in missing_fields:
-        allergy_no = re.search(
-            rf"\b{no_prefix}\b[^.?!;]*\b{allergy_term}\b|\b{allergy_term}\b[^.?!;]*\b{no_prefix}\b",
-            normalized,
-        )
-        if allergy_no or normalized in {"no allergies", "none"}:
+    if "allergies" in missing_fields and allergy_context:
+        if negative_answer and (combined_health_context or not medical_context):
+            result["allergies"] = "None reported"
+        elif explicit_negative(allergy_term):
             result["allergies"] = "None reported"
 
-    if "medical_conditions" in missing_fields:
-        medical_no = re.search(
-            rf"\b{no_prefix}\b[^.?!;]*\b{medical_term}\b|\b{medical_term}\b[^.?!;]*\b{no_prefix}\b",
-            normalized,
-        )
-        if medical_no or normalized in {"no medical conditions", "no medical condition", "none"}:
+    if "medical_conditions" in missing_fields and medical_context:
+        if negative_answer and (combined_health_context or not allergy_context):
             result["medical_conditions"] = "None reported"
-
-    # Common combined answer, including the exact phrase used in testing.
-    if re.search(r"\b(no|none|don't have|dont have|do not have)\b", normalized):
-        if "allergies" in missing_fields and re.search(r"allerg", normalized):
-            result["allergies"] = "None reported"
-        if "medical_conditions" in missing_fields and re.search(r"medical\s+(?:condition|conditions)", normalized):
+        elif explicit_negative(medical_term):
             result["medical_conditions"] = "None reported"
 
     return result
@@ -368,7 +420,7 @@ async def _handle_onboarding(
     # LLM remains the natural-language extractor, but high-confidence deterministic
     # hints protect state-critical onboarding from spelling/format noise and context-only
     # answers such as a standalone "no" after an exercise question.
-    deterministic_health = _deterministic_health_answers(text, missing)
+    deterministic_health = _deterministic_health_answers(text, missing, history)
     deterministic_profile = _deterministic_profile_hints(text, history)
     deterministic = {**deterministic_profile, **deterministic_health}
 

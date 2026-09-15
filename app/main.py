@@ -8,6 +8,7 @@ from app.config import settings
 from app.utils.logging_config import configure_logging, logger
 from app.whatsapp.webhook import router as whatsapp_router
 from app.payments.webhook import router as razorpay_router
+from app.admin.routes import router as admin_router
 
 
 @asynccontextmanager
@@ -37,6 +38,7 @@ app = FastAPI(
 )
 app.include_router(whatsapp_router, tags=["whatsapp"])
 app.include_router(razorpay_router, tags=["payments"])
+app.include_router(admin_router)
 
 
 @app.get("/health/live")

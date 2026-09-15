@@ -167,7 +167,11 @@ def validate_extracted_fields(extracted: dict[str, Any]) -> dict[str, Any]:
         if field in extracted:
             raw = _clean_text(extracted[field], _TEXT_LIMITS[field])
             if raw and raw.casefold() in {
-                "none", "none reported", "no", "no allergies", "no medical conditions",
+                "none", "none reported", "no", "no allergies", "no allergy",
+                "no medical conditions", "no medical condition", "no medical issues",
+                "no health issues", "no health problems", "nothing", "nothing to report",
+                "nothing that i know of", "i don't have any", "i dont have any",
+                "i do not have any", "i have none", "there are none", "there is none",
             }:
                 clean[field] = "None reported"
             else:

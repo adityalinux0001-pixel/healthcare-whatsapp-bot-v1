@@ -84,7 +84,7 @@ async def _tool_followup(contents, candidate_content, tool_calls, system_prompt:
     if response_parts:
         next_contents.append(types.Content(role="user", parts=response_parts))
     else:
-        next_contents.append(types.Content(role="user", parts=[types.Part(text="Ab natural conversational reply do.")]))
+        next_contents.append(types.Content(role="user", parts=[types.Part(text="Now provide the final natural conversational reply in English.")]))
     followup = await _generate(
         settings.gemini_model_chat,
         next_contents,
@@ -97,10 +97,19 @@ async def run_onboarding_turn(
     profile, missing_fields, history, user_message, summary=None, explicit_fields=None
 ):
     explicit_fields = explicit_fields or {}
-    state_hint = ""
+    latest_assistant_question = next(
+        (str(turn.get("content") or "").strip() for turn in reversed(history) if turn.get("role") == "assistant"),
+        "",
+    )
+    state_hint = (
+        "\n\nCURRENT TURN CONTEXT:\n"
+        f"Latest assistant message/question: {latest_assistant_question or 'Not available'}\n"
+        "Interpret the user's current message as an answer to that message when appropriate. "
+        "A short reply such as 'no', 'none', or 'I don't have any' is meaningful only when the preceding question clearly establishes what it refers to. "
+    )
     if explicit_fields:
-        state_hint = (
-            "\n\nCURRENT-TURN HIGH-CONFIDENCE EXTRACTION (treat only these values as explicitly stated by the user):\n"
+        state_hint += (
+            "\nCURRENT-TURN HIGH-CONFIDENCE EXTRACTION (treat only these values as explicitly stated by the user):\n"
             f"{explicit_fields}\n"
             "These values are authoritative for this turn. Do not contradict them in your reply. "
             "In particular, never turn veg/vegetarian into vegan unless the user explicitly said vegan."
@@ -139,7 +148,7 @@ async def run_onboarding_turn(
             f"{accepted}\n"
             "Do not ask again about any field present above. Do not contradict these facts. "
             "Never call a vegetarian user vegan unless vegan was explicitly stated. "
-            "Respond naturally and ask only about the remaining missing fields, maximum 1-2 at a time."
+            "Use English only. Respond naturally and ask only about the remaining missing fields, maximum 1-2 at a time."
         )
         reply_text = await _tool_followup(contents, candidate_content, tool_calls, followup_prompt)
     return reply_text or "Understood. Let's continue.", extracted

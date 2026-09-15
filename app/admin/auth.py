@@ -2,13 +2,11 @@ import base64
 import hashlib
 import hmac
 import secrets
-import time
 from typing import Any
 
 from fastapi import HTTPException, Request, status
-from redis.asyncio import Redis
-
-from .settings import settings
+from app.config import settings
+from app.redis_client import redis_client
 
 
 SESSION_KEY = "admin_session"
@@ -48,44 +46,33 @@ def normalize_phone(phone: str) -> str:
 
 
 def verify_admin_credentials(phone: str, password: str) -> bool:
+    if not settings.admin_phone or not settings.admin_password_hash:
+        return False
     return (
         secrets.compare_digest(normalize_phone(phone), normalize_phone(settings.admin_phone))
         and verify_password(password, settings.admin_password_hash)
     )
 
 
-async def get_redis() -> Redis:
-    return Redis.from_url(settings.redis_url, decode_responses=True)
-
-
 async def login_allowed(client_key: str) -> bool:
-    redis = await get_redis()
+    redis = redis_client
     key = RATE_LIMIT_PREFIX + hashlib.sha256(client_key.encode()).hexdigest()
-    try:
-        count = await redis.get(key)
-        return int(count or 0) < RATE_LIMIT_MAX_FAILURES
-    finally:
-        await redis.aclose()
+    count = await redis.get(key)
+    return int(count or 0) < RATE_LIMIT_MAX_FAILURES
 
 
 async def record_login_failure(client_key: str) -> None:
-    redis = await get_redis()
+    redis = redis_client
     key = RATE_LIMIT_PREFIX + hashlib.sha256(client_key.encode()).hexdigest()
-    try:
-        count = await redis.incr(key)
-        if count == 1:
-            await redis.expire(key, RATE_LIMIT_WINDOW_SECONDS)
-    finally:
-        await redis.aclose()
+    count = await redis.incr(key)
+    if count == 1:
+        await redis.expire(key, RATE_LIMIT_WINDOW_SECONDS)
 
 
 async def clear_login_failures(client_key: str) -> None:
-    redis = await get_redis()
+    redis = redis_client
     key = RATE_LIMIT_PREFIX + hashlib.sha256(client_key.encode()).hexdigest()
-    try:
-        await redis.delete(key)
-    finally:
-        await redis.aclose()
+    await redis.delete(key)
 
 
 def issue_session(response: Any) -> str:
@@ -104,6 +91,8 @@ def issue_session(response: Any) -> str:
 
 def session_is_valid(request: Request) -> bool:
     token = request.cookies.get(SESSION_KEY)
+    if not settings.admin_session_secret:
+        return False
     secret = settings.admin_session_secret.encode("utf-8")
     if not token or len(token) < 32:
         return False
