@@ -8,7 +8,10 @@ from app.models import User, Message
 from app.config import settings
 from app.services.subscription_service import get_active_subscription, prompt_payment
 from app.llm.gemini_client import run_general_qa, update_conversation_summary
-from app.knowledge.safety import consent_request_message, consent_declined_message, detect_red_flag, emergency_response
+from app.knowledge.safety import (
+    consent_request_message, consent_declined_message, detect_red_flag, emergency_response,
+    detect_high_risk_profile, high_risk_profile_message,
+)
 from app.whatsapp.client import send_text_message
 from app.redis_client import redis_client
 from app.utils.logging_config import logger
@@ -119,6 +122,16 @@ async def handle_incoming_message(
         if user.onboarding_complete:
             subscription = await get_active_subscription(db, user)
             if not subscription:
+                high_risk = detect_high_risk_profile(user.profile_dict())
+                if high_risk:
+                    logger.warning(
+                        "payment_prompt_blocked_high_risk_profile",
+                        user_id=user.id,
+                        phone=mask_identifier(phone),
+                        reason=high_risk,
+                    )
+                    await send_text_message(phone, high_risk_profile_message())
+                    return
                 await prompt_payment(db, user)
                 logger.info(
                     "conversation_payment_required",
@@ -259,13 +272,24 @@ async def _handle_onboarding(
         return
 
     just_completed = (not user.onboarding_complete) and (not missing_after)
+    just_completed_high_risk = False
     if just_completed:
         user.onboarding_complete = True
-        reply = (
-            "Perfect! ✅ Your profile is complete.\n\n"
-            "Your personalized daily diet and exercise plan is now being generated based on "
-            "your goals and preferences. 🌿"
-        )
+        high_risk = detect_high_risk_profile(user.profile_dict())
+        if high_risk:
+            just_completed_high_risk = True
+            logger.warning(
+                "onboarding_complete_high_risk_profile",
+                user_id=user.id,
+                reason=high_risk,
+            )
+            reply = high_risk_profile_message()
+        else:
+            reply = (
+                "Perfect! ✅ Your profile is complete.\n\n"
+                "Your personalized daily diet and exercise plan is now being generated based on "
+                "your goals and preferences. 🌿"
+            )
     else:
         next_field = missing_after[0]
         reply = QUESTIONS.get(next_field, "Could you share a bit more about yourself? 😊")
@@ -274,9 +298,11 @@ async def _handle_onboarding(
     await db.commit()
     await send_text_message(phone, reply)
 
-    # Ask for payment only after onboarding is fully complete. If the user already
-    # has an active subscription, preserve the existing immediate plan generation path.
-    if just_completed:
+    # Ask for payment only after onboarding is fully complete, and only when the
+    # profile isn't flagged high-risk — a high-risk profile must never reach the
+    # payment prompt or automated plan generation (see high_risk_profile_message()
+    # sent above instead).
+    if just_completed and not just_completed_high_risk:
         subscription = await get_active_subscription(db, user)
         if subscription:
             pool = await get_arq_pool()

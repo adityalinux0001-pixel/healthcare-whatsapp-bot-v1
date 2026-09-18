@@ -291,6 +291,8 @@ async def generate_plan_for_user(user_id: int, *, prefer_text: bool = False) -> 
                 user_id=user_id,
                 reason=high_risk,
             )
+            from app.knowledge.safety import high_risk_profile_message
+            await send_text_message(user.phone_number, high_risk_profile_message())
             return
 
         recent = await _recent_meals(db, user_id)
@@ -352,7 +354,7 @@ async def revise_today_plan(
             user_id=user.id,
             reason=high_risk,
         )
-        return None
+        return None  # caller (_handle_general_qa) sends its own fallback reply
 
     recent = await _recent_meals(db, user.id)
 
