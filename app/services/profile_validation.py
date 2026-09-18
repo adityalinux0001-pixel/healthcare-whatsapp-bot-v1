@@ -114,6 +114,11 @@ def validate_extracted_fields(extracted: dict[str, Any]) -> dict[str, Any]:
     """Return only safe, normalized fields suitable for persistence."""
     clean: dict[str, Any] = {}
 
+    if "name" in extracted:
+        value = _clean_text(extracted["name"], 100)
+        if value:
+            clean["name"] = value
+
     if "age" in extracted:
         try:
             age = int(extracted["age"])

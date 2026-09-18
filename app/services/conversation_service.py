@@ -1,5 +1,6 @@
 from sqlalchemy import select
-from datetime import date
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 import re
 from uuid import uuid4
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,6 +9,7 @@ from app.models import User, Message
 from app.config import settings
 from app.services.subscription_service import get_active_subscription, prompt_payment
 from app.llm.gemini_client import run_general_qa, update_conversation_summary
+from app.llm.context import build_response_context
 from app.knowledge.safety import (
     consent_request_message, consent_declined_message, detect_red_flag, emergency_response,
     detect_high_risk_profile, high_risk_profile_message,
@@ -345,141 +347,249 @@ def _food_dislike_items(value: str | None) -> set[str]:
     return {item.strip().casefold() for item in re.split(r"[,;|]", value) if item.strip()}
 
 
-def _today_plan_change_request(
-    text: str,
-    history: list[dict],
-    new_dislikes: set[str],
-) -> tuple[str | None, str | None]:
-    """Detect an explicit same-day plan change without affecting ordinary Q&A."""
-    normalized = re.sub(r"\s+", " ", text.casefold()).strip()
+def _format_profile_recall(user: User, fields: list[str]) -> str:
+    """Render only profile facts explicitly requested by the user."""
+    labels = {
+        "name": "Name",
+        "age": "Age",
+        "gender": "Gender",
+        "height_cm": "Height",
+        "weight_kg": "Weight",
+        "activity_level": "Activity level",
+        "goal": "Goal",
+        "diet_preference": "Diet preference",
+        "allergies": "Allergies",
+        "medical_conditions": "Medical conditions",
+        "food_dislikes": "Food dislikes",
+    }
+    values = user.profile_dict()
+    visible: list[str] = []
+    for field in fields:
+        value = values.get(field)
+        if value in (None, ""):
+            continue
+        if field in {"height_cm", "weight_kg"}:
+            suffix = " cm" if field == "height_cm" else " kg"
+            value = f"{value}{suffix}"
+        elif field in {"goal", "activity_level", "diet_preference"}:
+            value = str(value).replace("_", " ")
+        visible.append(f"{labels[field]}: {value}")
 
-    if new_dislikes:
-        foods = ", ".join(sorted(new_dislikes))
-        return (
-            "food_dislike",
-            f"User explicitly added these foods to their dislikes: {foods}. "
-            "Regenerate today's existing plan so these foods do not appear in meal ingredients. "
-            "Preserve all allergies, diet preference, medical safety, goal, and other constraints.",
-        )
+    if not visible:
+        return "I don't have that detail saved yet."
+    if len(visible) == 1:
+        label, value = visible[0].split(":", 1)
+        return f"Your saved {label.lower()} is {value.strip()}."
+    return "Here are the details I currently have saved for you:\n" + "\n".join(f"• {item}" for item in visible)
 
-    fast_words = r"\b(?:fast|fasting)\b"
-    today_words = r"\b(?:today)\b"
-    fasting_food_details = r"\b(?:allowed|allow|not allowed|avoid|only|fruits?|dairy|milk|sabudana|sago|nuts?|dry fruits?)\b"
 
-    if re.search(fast_words, normalized) and re.search(today_words, normalized):
-        if re.search(fasting_food_details, normalized):
-            return (
-                "fast",
-                "User says they are fasting today and explicitly provided fasting food permissions/restrictions "
-                f"in the current message: {text.strip()}. Use ONLY what the user explicitly stated. "
-                "Do not invent or assume religion-specific fasting rules. Preserve all other profile and safety constraints.",
-            )
-        return "fast_needs_details", None
+def _trusted_profile_updates(route) -> dict:
+    """Convert semantic extraction into validated DB fields, with a strict write gate."""
+    raw: dict = {}
+    for candidate in route.profile_updates:
+        # LLM output is advisory. Persistence requires high confidence plus current-turn evidence.
+        if candidate.confidence < settings.conversation_profile_update_min_confidence:
+            continue
+        if not candidate.evidence.strip() or not candidate.value.strip():
+            continue
+        raw[candidate.field] = candidate.value
 
-    # The user may answer the bot's fasting clarification on the next turn with
-    # only the allowed foods. Recent user history supplies the fasting context.
-    recent_user_text = " ".join(
-        turn.get("content", "") for turn in history[-4:] if turn.get("role") == "user"
-    ).casefold()
-    if re.search(fast_words, recent_user_text) and re.search(fasting_food_details, normalized):
-        return (
-            "fast",
-            "The user previously said they are fasting today and has now provided fasting food permissions/restrictions. "
-            f"Use ONLY the current user's stated fasting details: {text.strip()}. "
-            "Do not invent or assume religion-specific fasting rules. Preserve all other profile and safety constraints.",
-        )
+    if not raw:
+        return {}
+    return validate_extracted_fields(raw)
 
-    return None, None
+
+def _resolve_plan_request(route, history: list[dict]) -> tuple[int | None, date | None, str, str | None]:
+    """Resolve semantic plan references against the application clock; never trust model-supplied dates blindly."""
+    from datetime import date as date_type
+
+    reference = route.plan_reference
+    day_number = route.plan_day_number
+    plan_date = None
+
+    if reference == "day_number":
+        if not day_number or day_number < 1:
+            return None, None, route.plan_scope, route.plan_section
+        return int(day_number), None, route.plan_scope, route.plan_section
+
+    if reference in {"today", "yesterday", "tomorrow"}:
+        today = datetime.now(ZoneInfo("Asia/Kolkata")).date()
+        offsets = {"today": 0, "yesterday": -1, "tomorrow": 1}
+        return None, today + timedelta(days=offsets[reference]), route.plan_scope, route.plan_section
+
+    if reference == "date" and route.plan_date:
+        try:
+            plan_date = date_type.fromisoformat(route.plan_date)
+        except ValueError:
+            return None, None, route.plan_scope, route.plan_section
+        return None, plan_date, route.plan_scope, route.plan_section
+
+    # For ambiguous contextual references, ask the model only through the router's
+    # clarification path; the database handler never guesses a date/day.
+    return None, None, route.plan_scope, route.plan_section
 
 
 async def _handle_general_qa(
     db: AsyncSession, user: User, phone: str, text: str,
     history: list[dict], summary: str | None,
 ) -> None:
-    previous_dislikes = _food_dislike_items(user.food_dislikes)
-    reply, extracted, plan_request = await run_general_qa(
-        user.profile_dict(), history, text, summary
-    )
-    _apply_extracted_fields(user, extracted)
-    new_dislikes = _food_dislike_items(user.food_dislikes) - previous_dislikes
+    """Production conversation orchestrator: classify -> validate -> execute -> answer."""
+    from app.llm.gemini_client import classify_conversation
 
-    # Historical-plan retrieval always wins. A request for an old plan must never
-    # be converted into a current-day revision.
-    change_kind, modification_instruction = (None, None)
-    if plan_request is None:
-        change_kind, modification_instruction = _today_plan_change_request(
-            text, history, new_dislikes
+    try:
+        route = await classify_conversation(
+            profile=user.profile_dict(),
+            history=history,
+            user_message=text,
+            summary=summary,
         )
+    except Exception:
+        logger.exception("conversation_router_failed", user_id=user.id)
+        route = None
 
-    # Historical diet plans are factual database records. Never ask Gemini to
-    # recreate them; retrieve the exact stored content by immutable day/date.
-    revised_plan = None
-    if change_kind == "fast_needs_details":
-        reply = (
-            "Understood — you are fasting today. 🙏 Which foods are allowed during your fast "
-            "(for example, fruits, dairy, sabudana, nuts, etc.)? Please tell me, and I will update "
-            "today's plan accordingly."
+    if route is None:
+        # Fail open to ordinary grounded conversation, but still use the conservative
+        # response-context boundary so a router outage cannot dump the full profile/history.
+        response_profile, response_history, response_summary = build_response_context(
+            user.profile_dict(), history, summary, None
         )
-    elif modification_instruction:
-        from app.services.diet_plan_service import revise_today_plan, _send_plan
-        try:
-            revised_plan = await revise_today_plan(db, user, modification_instruction)
-        except Exception:
-            logger.exception(
-                "today_plan_revision_failed",
-                user_id=user.id,
-                change_kind=change_kind,
-            )
-            revised_plan = None
+        reply, _, _ = await run_general_qa(
+            response_profile, response_history, text, response_summary, grounding_required=True
+        )
+        db.add(Message(user_id=user.id, role="assistant", content=reply))
+        await db.commit()
+        await send_text_message(phone, reply)
+        return
 
-        if revised_plan:
-            reply = "Done ✅ Today's diet plan has been updated according to your latest preference. The new plan is below. 🌿"
-        else:
-            reply = (
-                "I have noted your preference. Today's saved plan could not be updated right now, "
-                "but your preference will be followed in future plans."
-            )
+    # Read-only profile recall is deterministic after semantic classification.
+    if route.intent == "profile_recall" and route.confidence >= settings.conversation_route_min_confidence:
+        fields = list(route.profile_fields)
+        if fields:
+            reply = _format_profile_recall(user, fields)
+            db.add(Message(user_id=user.id, role="assistant", content=reply))
+            await db.commit()
+            await send_text_message(phone, reply)
+            return
 
-    if plan_request:
+    # Explicit saved-plan retrieval is also deterministic. The LLM only resolves
+    # language into a plan reference; it never fabricates or edits stored content.
+    if route.intent == "saved_plan_retrieval" and route.confidence >= settings.conversation_route_min_confidence:
         from app.services.diet_plan_service import get_historical_plan
-
+        day_number, plan_date, scope, section = _resolve_plan_request(route, history)
         plan = None
-        day_number = plan_request.get("day_number")
         if day_number is not None:
-            try:
-                day_number = int(day_number)
-                if day_number >= 1:
-                    plan = await get_historical_plan(
-                        db, user.id, day_number=day_number
-                    )
-            except (TypeError, ValueError):
-                plan = None
-
-        if plan is None and plan_request.get("plan_date"):
-            try:
-                requested_date = date.fromisoformat(str(plan_request["plan_date"]))
-                plan = await get_historical_plan(
-                    db, user.id, local_date=requested_date
-                )
-            except ValueError:
-                plan = None
+            plan = await get_historical_plan(db, user.id, day_number=day_number)
+        elif plan_date is not None:
+            plan = await get_historical_plan(db, user.id, local_date=plan_date)
 
         if plan and plan.content:
-            reply = (
-                f"Here is your saved *Day {plan.day_number}* diet plan. 🌿\n\n"
-                f"{plan.content}"
-            )
+            if scope == "section" and section:
+                # Keep the stored plan immutable; ask no LLM to regenerate it.
+                # A lightweight exact-section extractor is used only for known headings.
+                section_map = {
+                    "breakfast": "*Breakfast:*",
+                    "mid_morning_snack": "*Mid-morning:*",
+                    "mid morning snack": "*Mid-morning:*",
+                    "lunch": "*Lunch:*",
+                    "evening_snack": "*Evening snack:*",
+                    "evening snack": "*Evening snack:*",
+                    "dinner": "*Dinner:*",
+                    "exercise": "*Exercise:*",
+                    "hydration": "*Hydration & routine:*",
+                }
+                heading = section_map.get(section.casefold().strip())
+                if heading and heading in plan.content:
+                    # Extract the selected labeled section without changing stored data.
+                    after = plan.content.split(heading, 1)[1].lstrip()
+                    next_marker = re.search(r"\n\n(?:🍎|🍛|☕|🥗|🏃|💧|⚠️|🍳)\s*\*[^*]+\*:", after)
+                    body = after[:next_marker.start()] if next_marker else after
+                    reply = f"From your saved *Day {plan.day_number}* plan:\n\n{heading} {body.strip()}"
+                else:
+                    reply = f"Here is your saved *Day {plan.day_number}* diet plan. 🌿\n\n{plan.content}"
+            else:
+                reply = f"Here is your saved *Day {plan.day_number}* diet plan. 🌿\n\n{plan.content}"
+        elif day_number is not None:
+            reply = f"I don't have a saved Day {day_number} diet plan yet."
         else:
-            requested = (
-                f"Day {day_number}" if day_number else "us date ka"
-            )
-            reply = (
-                f"I could not find a saved diet plan for {requested}. "
-                "I can show you your current plan instead. 😊"
+            reply = "I don't have a saved diet plan for that date yet."
+
+        db.add(Message(user_id=user.id, role="assistant", content=reply))
+        await db.commit()
+        await send_text_message(phone, reply)
+        return
+
+    # Persist only semantically explicit, high-confidence updates from the current turn.
+    previous_dislikes = _food_dislike_items(user.food_dislikes)
+    trusted_updates = _trusted_profile_updates(route)
+    if trusted_updates:
+        _apply_extracted_fields(user, trusted_updates)
+        await db.commit()
+
+    new_dislikes = _food_dislike_items(user.food_dislikes) - previous_dislikes
+
+    # Same-day plan modification is a domain side effect. Only do it after the
+    # semantic router explicitly classifies the request as a plan modification,
+    # plus the existing food-dislike preservation behavior.
+    if route.intent == "plan_modification" and route.confidence >= settings.conversation_route_min_confidence:
+        from app.services.diet_plan_service import revise_today_plan, _send_plan
+
+        instruction = route.modification_instruction
+        if not instruction and route.clarification_question:
+            reply = route.clarification_question
+            db.add(Message(user_id=user.id, role="assistant", content=reply))
+            await db.commit()
+            await send_text_message(phone, reply)
+            return
+
+        if instruction and new_dislikes:
+            instruction = (
+                f"{instruction} Additionally, the user explicitly added these food dislikes: "
+                f"{', '.join(sorted(new_dislikes))}. Do not include them in today's plan."
             )
 
+        if instruction:
+            revised_plan = None
+            try:
+                revised_plan = await revise_today_plan(db, user, instruction)
+            except Exception:
+                logger.exception(
+                    "today_plan_revision_failed",
+                    user_id=user.id,
+                    reason="semantic_plan_modification",
+                )
+
+            if revised_plan:
+                reply = "Done ✅ I updated today's saved plan based on your latest request. The updated plan is below. 🌿"
+                db.add(Message(user_id=user.id, role="assistant", content=reply))
+                await db.commit()
+                await send_text_message(phone, reply)
+                await _send_plan(user, revised_plan)
+                return
+
+            reply = (
+                "I noted your request, but I couldn't update today's saved plan right now. "
+                "Your preference is saved and will be respected in future plans."
+            )
+            db.add(Message(user_id=user.id, role="assistant", content=reply))
+            await db.commit()
+            await send_text_message(phone, reply)
+            return
+
+    # Everything else is ordinary conversational generation. The semantic route
+    # chooses the minimum relevant state/history for the final answer; the full
+    # profile and raw rolling window are never blindly injected.
+    response_profile, response_history, response_summary = build_response_context(
+        user.profile_dict(), history, summary, route
+    )
+    reply, _, _ = await run_general_qa(
+        response_profile,
+        response_history,
+        text,
+        response_summary,
+        grounding_required=bool(route.grounding_required),
+        allow_profile_update_tool=False,
+    )
     db.add(Message(user_id=user.id, role="assistant", content=reply))
     await db.commit()
     await send_text_message(phone, reply)
-    if revised_plan is not None:
-        await _send_plan(user, revised_plan)
+
