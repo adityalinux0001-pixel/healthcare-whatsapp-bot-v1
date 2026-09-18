@@ -7,13 +7,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import User, Message
 from app.config import settings
 from app.services.subscription_service import get_active_subscription, prompt_payment
-from app.llm.gemini_client import run_onboarding_turn, run_general_qa, update_conversation_summary
+from app.llm.gemini_client import run_general_qa, update_conversation_summary
 from app.knowledge.safety import consent_request_message, consent_declined_message, detect_red_flag, emergency_response
 from app.whatsapp.client import send_text_message
 from app.redis_client import redis_client
 from app.utils.logging_config import logger
 from app.utils.security import mask_identifier
 from app.services.profile_validation import validate_extracted_fields
+from app.services.onboarding_extract import (
+    ONBOARDING_ORDER, QUESTIONS, RETRY_HINTS, extract_fields_from_text,
+)
 
 HISTORY_LIMIT = 8        # messages sent to Gemini each turn
 SUMMARY_EVERY_N = 20     # update long-term summary every N user messages
@@ -93,10 +96,7 @@ async def handle_incoming_message(
                 user.health_data_consent_at = datetime.now(timezone.utc)
                 db.add(Message(user_id=user.id, role="user", content=text, whatsapp_message_id=wa_message_id))
                 await db.flush()
-                reply = (
-                    "Thank you. ✅ Consent recorded.\n\n"
-                    "Let's complete your profile first. Please tell me your name 😊"
-                )
+                reply = f"Thank you. ✅ Consent recorded.\n\n{QUESTIONS[ONBOARDING_ORDER[0]]}"
                 db.add(Message(user_id=user.id, role="assistant", content=reply))
                 await db.commit()
                 await send_text_message(phone, reply)
@@ -164,228 +164,6 @@ async def handle_incoming_message(
 
 
 
-def _latest_assistant_context(history: list[dict] | None) -> str:
-    """Return the latest assistant turn so short replies can be interpreted in context."""
-    for turn in reversed(history or []):
-        if turn.get("role") == "assistant":
-            return re.sub(r"\s+", " ", str(turn.get("content") or "")).strip()
-    return ""
-
-
-def _deterministic_health_answers(
-    text: str,
-    missing_fields: list[str],
-    history: list[dict] | None = None,
-) -> dict[str, str]:
-    """Capture only high-confidence context-dependent health answers.
-
-    Gemini is the primary semantic extractor. This fallback exists for state-critical
-    answers that are obvious from the immediately preceding onboarding question, such
-    as a standalone ``no`` after "Do you have any allergies or medical conditions?".
-    It deliberately does not treat arbitrary ``no``/``nothing`` messages as health data.
-    """
-    normalized = re.sub(r"\s+", " ", text.casefold()).strip()
-    assistant_text = _latest_assistant_context(history).casefold()
-    result: dict[str, str] = {}
-
-    if not normalized or not assistant_text:
-        return result
-
-    allergy_context = bool(re.search(
-        r"\b(?:allerg(?:y|ies)|allergen(?:s)?|food sensitiv(?:ity|ities))\b",
-        assistant_text,
-    ))
-    medical_context = bool(re.search(
-        r"\b(?:medical (?:condition|conditions|issue|issues)|health (?:condition|conditions|issue|issues)|"
-        r"disease(?:s)?|health problem(?:s)?)\b",
-        assistant_text,
-    ))
-    combined_health_context = allergy_context and medical_context
-
-    # These are intentionally conservative high-confidence negative answers. Words such
-    # as "maybe", "I think", and "not really" are not treated as a definitive denial.
-    negative_answer = bool(re.fullmatch(
-        r"(?:no|nope|nah|none|nothing|nothing that i know of|"
-        r"i (?:do not|don't|dont) have (?:any|anything)|"
-        r"i (?:have|ve) no(?:thing)?(?: at all)?|"
-        r"there (?:is|are) none|"
-        r"no issues?|no problems?|nothing to report)",
-        normalized,
-    ))
-
-    def explicit_negative(term_pattern: str) -> bool:
-        return bool(re.search(
-            rf"(?:\b(?:no|none|without|don't have|dont have|do not have|never had)\b[^.?!;]*"
-            rf"\b{term_pattern}\b|\b{term_pattern}\b[^.?!;]*\b(?:no|none|without|don't have|dont have|do not have|never had)\b)",
-            normalized,
-        ))
-
-    allergy_term = r"(?:allerg(?:y|ies)|allergen(?:s)?)"
-    medical_term = r"(?:medical (?:condition|conditions|issue|issues)|health (?:condition|conditions|issue|issues)|disease(?:s)?|health problem(?:s)?)"
-
-    if "allergies" in missing_fields and allergy_context:
-        if negative_answer and (combined_health_context or not medical_context):
-            result["allergies"] = "None reported"
-        elif explicit_negative(allergy_term):
-            result["allergies"] = "None reported"
-
-    if "medical_conditions" in missing_fields and medical_context:
-        if negative_answer and (combined_health_context or not allergy_context):
-            result["medical_conditions"] = "None reported"
-        elif explicit_negative(medical_term):
-            result["medical_conditions"] = "None reported"
-
-    return result
-
-def _deterministic_profile_hints(
-    text: str,
-    history: list[dict] | None = None,
-) -> dict[str, object]:
-    """Extract only high-confidence profile facts from natural-language onboarding text.
-
-    This is intentionally conservative. Gemini remains the primary extractor, while this
-    layer catches common compact/messy formats and context-dependent answers so onboarding
-    cannot loop or silently lose explicitly stated profile facts.
-    """
-    normalized = re.sub(r"\s+", " ", text.casefold()).strip()
-    result: dict[str, object] = {}
-
-    # Name: only accept when introduced as a name/self-identification and followed by a
-    # clear profile token or end of sentence. This prevents phrases like "I am vegetarian"
-    # from becoming the user's name.
-    name_match = re.search(
-        r"\b(?:my name is|name is|i am|i'm|this is)\s+"
-        r"([a-z][a-z.'-]*(?:\s+[a-z][a-z.'-]*){0,4})"
-        r"(?=\s+(?:male|female|man|woman|m|f)\b|\s+\d{1,3}\s*(?:years?|yrs?|yo)\b|"
-        r"\s+\d{3}(?:\.\d+)?\s*cm\b|\s+\d{2,3}(?:\.\d+)?\s*kg\b|"
-        r"\s+(?:vegetarian|vegeterian|vegitarian|veg|vegan|non[- ]?veg|eggetarian|eggitarian)\b|"
-        r"\s+(?:desk job|office job|work from home)\b|\s+(?:and|,|;)|$)",
-        normalized,
-    )
-    if name_match:
-        candidate = name_match.group(1).strip(" ,;.-")
-        # Do not accept obvious non-name phrases.
-        blocked = {
-            "vegetarian", "vegeterian", "vegitarian", "veg", "vegan",
-            "male", "female", "man", "woman", "none", "no",
-            "very active", "active", "lightly active", "moderately active",
-            "looking to", "trying to", "going to", "not sure",
-        }
-        candidate_words = set(candidate.split())
-        non_name_words = {
-            "very", "active", "lightly", "moderately", "looking", "trying",
-            "want", "wants", "gain", "build", "lose", "maintain", "have",
-            "do", "work", "working", "from", "with", "at", "for", "and",
-        }
-        if (
-            candidate
-            and candidate not in blocked
-            and not candidate_words.intersection(non_name_words)
-        ):
-            result["name"] = candidate.title()
-
-    # Gender. Single-letter forms are accepted only as standalone tokens.
-    gender_match = re.search(r"\b(male|female|man|woman|m|f)\b", normalized)
-    if gender_match:
-        result["gender"] = {
-            "male": "male", "man": "male", "m": "male",
-            "female": "female", "woman": "female", "f": "female",
-        }[gender_match.group(1)]
-
-    # Age: prefer explicit age wording, then a number immediately after gender.
-    age_match = re.search(r"\bage\s*(?:is|:|-)?\s*(\d{1,3})\b", normalized)
-    if not age_match:
-        age_match = re.search(
-            r"\b(?:male|female|man|woman)\s*,?\s*(\d{1,3})\s*(?:years?|yrs?|yo)?\b",
-            normalized,
-        )
-    if not age_match:
-        age_match = re.search(r"\b(\d{1,3})\s*(?:years?|yrs?|yo)\b", normalized)
-    if age_match:
-        age = int(age_match.group(1))
-        if 1 <= age <= 120:
-            result["age"] = age
-
-    height_match = re.search(
-        r"\b(\d{3}(?:\.\d+)?)\s*(?:cm|cms|centimeters?|centimetres?)\b",
-        normalized,
-    )
-    if height_match:
-        height = float(height_match.group(1))
-        if 100 <= height <= 250:
-            result["height_cm"] = height
-
-    weight_match = re.search(
-        r"\b(\d{2,3}(?:\.\d+)?)\s*(?:kg|kgs|kilograms?)\b",
-        normalized,
-    )
-    if weight_match:
-        weight = float(weight_match.group(1))
-        if 20 <= weight <= 350:
-            result["weight_kg"] = weight
-
-    # Diet preference. Explicit terms win; never map vegetarian to vegan.
-    diet_patterns = [
-        (r"\b(?:non[- ]?veg|non[- ]?vegetarian|nonvegetarian)\b", "non_veg"),
-        (r"\b(?:eggetarian|eggitarian)\b", "eggetarian"),
-        (r"\bvegan\b", "vegan"),
-        (r"\b(?:vegetarian|vegeterian|vegitarian|veg)\b", "veg"),
-    ]
-    for pattern, value in diet_patterns:
-        if re.search(pattern, normalized):
-            result["diet_preference"] = value
-            break
-
-    # Goal. Use only common unambiguous phrases.
-    goal_patterns = [
-        (r"\b(?:gain muscle|gain muscles|build muscle|build muscles|put on muscle|muscle gain)\b", "muscle_gain"),
-        (r"\b(?:lose weight|lose fat|fat loss|weight loss)\b", "weight_loss"),
-        (r"\b(?:gain weight|put on weight|weight gain)\b", "weight_gain"),
-        (r"\bmaintain(?: weight)?\b", "maintain"),
-    ]
-    for pattern, value in goal_patterns:
-        if re.search(pattern, normalized):
-            result["goal"] = value
-            break
-
-    # Explicit activity labels.
-    activity_patterns = [
-        (r"\b(?:sedentary|inactive|not active|sedentry)\b", "sedentary"),
-        (r"\b(?:light(?:ly)? active)\b", "light"),
-        (r"\b(?:moderate(?:ly)? active)\b", "moderate"),
-        (r"\b(?:very active|active)\b", "active"),
-    ]
-    for pattern, value in activity_patterns:
-        if re.search(pattern, normalized):
-            result["activity_level"] = value
-            break
-
-    # A desk job is a useful low-activity signal. Only default to sedentary when the
-    # same message does not clearly describe regular exercise/physical activity.
-    desk_job = bool(re.search(r"\b(?:desk job|office job|work from home|wfh)\b", normalized))
-    regular_activity = bool(re.search(
-        r"\b(?:gym|workout|work out|exercise|running|jogging|cycling|sports?|training|walk(?:ing)?\s+daily|"
-        r"daily\s+(?:walk|exercise|workout)|regular(?:ly)?\s+(?:exercise|workout|train))\b",
-        normalized,
-    ))
-    negative_activity = bool(re.search(
-        r"\b(?:no|not|don't|dont|do not|never)\s+(?:exercise|workout|work out|gym|sports?|physical activity)\b",
-        normalized,
-    ))
-    if desk_job and (not regular_activity or negative_activity):
-        result["activity_level"] = "sedentary"
-
-    # Contextual one-word/no answer: if the assistant's recent question was clearly about
-    # exercise/activity and the user answers "no", classify the answer in that context only.
-    if normalized in {"no", "nope", "nah", "none", "not really", "i don't", "i dont"}:
-        recent_assistant = " ".join(
-            turn.get("content", "") for turn in (history or [])[-3:] if turn.get("role") == "assistant"
-        ).casefold()
-        if re.search(r"\b(?:activity|active|exercise|workout|work out|gym|physical activity)\b", recent_assistant):
-            result["activity_level"] = "sedentary"
-
-    return result
-
 def _apply_extracted_fields(user: User, extracted: dict) -> None:
     """FIX: food_dislikes is APPENDED to, never blindly overwritten — the model
     is asked to send the combined list, but this is a belt-and-suspenders guard
@@ -412,30 +190,45 @@ async def _handle_onboarding(
     db: AsyncSession, user: User, phone: str, text: str,
     history: list[dict], summary: str | None,
 ) -> None:
+    """Fully deterministic, LLM-free onboarding state machine.
+
+    One required field is targeted at a time (the first entry of
+    ``user.missing_fields()``, which is always in the same fixed order — see
+    app/services/onboarding_extract.ONBOARDING_ORDER). Every turn:
+
+      1. Parse the message with extract_fields_from_text(). The current
+         target field gets permissive parsing (bare numbers/words accepted);
+         every other still-missing field only matches unambiguous phrasing,
+         so a stray word never gets filed under the wrong question.
+      2. Apply whatever validated fields came out of that.
+      3. If the CURRENT target is still unanswered, re-send the exact same
+         question plus a short format hint and stop — we never advance,
+         never guess, and never silently drop the field. This is what
+         prevents both failure modes seen before: names getting mangled by
+         free-form LLM extraction, and the allergies/medical-conditions
+         question looping because a "no" variant didn't match a strict
+         fullmatch regex.
+      4. Otherwise move on to the next missing field, or finish onboarding.
+
+    No Gemini call happens anywhere in this path, so there is nothing here
+    that can behave differently between two identical inputs.
+    """
     from app.redis_client import get_arq_pool
 
-    profile = user.profile_dict()
     missing = user.missing_fields()
+    current_target = missing[0] if missing else None
 
-    # LLM remains the natural-language extractor, but high-confidence deterministic
-    # hints protect state-critical onboarding from spelling/format noise and context-only
-    # answers such as a standalone "no" after an exercise question.
-    deterministic_health = _deterministic_health_answers(text, missing, history)
-    deterministic_profile = _deterministic_profile_hints(text, history)
-    deterministic = {**deterministic_profile, **deterministic_health}
-
-    reply, extracted = await run_onboarding_turn(
-        profile, missing, history, text, summary, explicit_fields=deterministic
-    )
-    if deterministic:
-        extracted = {**extracted, **deterministic}
-        logger.info(
-            "deterministic_onboarding_fields_extracted",
-            fields=sorted(deterministic),
-            user_id=user.id,
-        )
-
-    _apply_extracted_fields(user, extracted)
+    extracted: dict = {}
+    if current_target:
+        extracted = extract_fields_from_text(text, current_target, missing, history)
+        if extracted:
+            logger.info(
+                "onboarding_fields_extracted",
+                fields=sorted(extracted),
+                target=current_target,
+                user_id=user.id,
+            )
+        _apply_extracted_fields(user, extracted)
 
     # Personalized plans are adult-only. Keep the conversation open so the user
     # can correct an accidentally extracted age later, but never enqueue a plan
@@ -450,14 +243,32 @@ async def _handle_onboarding(
         await send_text_message(phone, reply)
         return
 
-    just_completed = (not user.onboarding_complete) and (not user.missing_fields())
+    missing_after = user.missing_fields()
+
+    # The current target field is still unanswered -> hold position. Re-ask
+    # the exact same question (with a short hint), do not advance, and do
+    # not lose any *other* fields we may have opportunistically captured
+    # above (they were already applied via _apply_extracted_fields).
+    if current_target and current_target in missing_after:
+        hint = RETRY_HINTS.get(current_target, "")
+        question = QUESTIONS.get(current_target, "")
+        reply = f"{hint}\n\n{question}".strip() if hint else question
+        db.add(Message(user_id=user.id, role="assistant", content=reply))
+        await db.commit()
+        await send_text_message(phone, reply)
+        return
+
+    just_completed = (not user.onboarding_complete) and (not missing_after)
     if just_completed:
         user.onboarding_complete = True
         reply = (
-            f"Perfect, {user.name or 'there'}! ✅ Your profile is complete.\n\n"
+            "Perfect! ✅ Your profile is complete.\n\n"
             "Your personalized daily diet and exercise plan is now being generated based on "
             "your goals and preferences. 🌿"
         )
+    else:
+        next_field = missing_after[0]
+        reply = QUESTIONS.get(next_field, "Could you share a bit more about yourself? 😊")
 
     db.add(Message(user_id=user.id, role="assistant", content=reply))
     await db.commit()

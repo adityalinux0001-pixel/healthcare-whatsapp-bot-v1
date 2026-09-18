@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import re
@@ -70,7 +69,6 @@ _GENDER_ALIASES = {
 }
 
 _TEXT_LIMITS = {
-    "name": 100,
     "gender": 30,
     "allergies": 1000,
     "medical_conditions": 1500,
@@ -115,11 +113,6 @@ def _normalize_enum(value: Any, aliases: dict[str, str], allowed: set[str]) -> s
 def validate_extracted_fields(extracted: dict[str, Any]) -> dict[str, Any]:
     """Return only safe, normalized fields suitable for persistence."""
     clean: dict[str, Any] = {}
-
-    if "name" in extracted:
-        value = _clean_text(extracted["name"], _TEXT_LIMITS["name"])
-        if value:
-            clean["name"] = value
 
     if "age" in extracted:
         try:

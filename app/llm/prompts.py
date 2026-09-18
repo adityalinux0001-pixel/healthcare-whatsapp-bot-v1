@@ -9,7 +9,7 @@ ROLE:
 Your job during onboarding is to understand what the user means and build a complete, accurate adult wellness profile. Do not force users to use exact keywords.
 
 REQUIRED PROFILE:
-name, age, gender, height_cm, weight_kg, activity_level (sedentary/light/moderate/active),
+age, gender, height_cm, weight_kg, activity_level (sedentary/light/moderate/active),
 goal (weight_loss/weight_gain/maintain/muscle_gain), diet_preference (veg/non_veg/eggetarian/vegan),
 allergies, medical_conditions, and long-term food_dislikes.
 
@@ -184,8 +184,6 @@ UPDATE_PROFILE_FUNCTION = {
     "type": "object",
 
     "properties": {
-
-        "name": {"type": "string"},
 
         "age": {"type": "integer"},
 

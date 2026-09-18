@@ -63,8 +63,10 @@ class User(Base):
 
     # Health-safety questions are explicit completion requirements. An explicit
     # "none" answer satisfies the requirement just like a non-empty answer.
+    # NOTE: onboarding no longer collects "name" — the column stays (nullable,
+    # unused going forward) only so existing rows and the admin panel keep working.
     REQUIRED_FIELDS = [
-        "name", "age", "gender", "height_cm", "weight_kg",
+        "age", "gender", "height_cm", "weight_kg",
         "activity_level", "goal", "diet_preference",
     ]
 
