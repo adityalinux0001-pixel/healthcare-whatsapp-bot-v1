@@ -592,7 +592,6 @@ async def _handle_general_qa(
         await db.commit()
         await send_text_message(phone, reply)
         return
-
     # Everything else is ordinary conversational generation. The semantic route
     # chooses the minimum relevant state/history for the final answer; the full
     # profile and raw rolling window are never blindly injected.
