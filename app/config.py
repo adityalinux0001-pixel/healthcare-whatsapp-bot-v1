@@ -39,6 +39,8 @@ class Settings(BaseSettings):
 
     gemini_api_key: str
     gemini_model_chat: str = "gemini-2.5-flash-lite"
+    # Separate semantic router model so routing cost/latency can be tuned independently.
+    gemini_model_router: str = "gemini-2.5-flash-lite"
     gemini_model_diet_plan: str = "gemini-2.5-flash"
 
     razorpay_key_id: str
@@ -66,6 +68,8 @@ class Settings(BaseSettings):
     require_health_consent: bool = False
 
     conversation_lock_seconds: int = 900
+    conversation_route_min_confidence: float = 0.78
+    conversation_profile_update_min_confidence: float = 0.90
 
     bypass_subscription: bool = False
 

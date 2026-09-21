@@ -1,5 +1,6 @@
 from sqlalchemy import select
-from datetime import date
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 import re
 from uuid import uuid4
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -7,13 +8,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import User, Message
 from app.config import settings
 from app.services.subscription_service import get_active_subscription, prompt_payment
-from app.llm.gemini_client import run_onboarding_turn, run_general_qa, update_conversation_summary
-from app.knowledge.safety import consent_request_message, consent_declined_message, detect_red_flag, emergency_response
+from app.llm.gemini_client import run_general_qa, update_conversation_summary
+from app.llm.context import build_response_context
+from app.knowledge.safety import (
+    consent_request_message, consent_declined_message, detect_red_flag, emergency_response,
+    detect_high_risk_profile, high_risk_profile_message,
+)
 from app.whatsapp.client import send_text_message
 from app.redis_client import redis_client
 from app.utils.logging_config import logger
 from app.utils.security import mask_identifier
 from app.services.profile_validation import validate_extracted_fields
+from app.services.onboarding_extract import (
+    ONBOARDING_ORDER, QUESTIONS, RETRY_HINTS, extract_fields_from_text,
+)
 
 HISTORY_LIMIT = 8        # messages sent to Gemini each turn
 SUMMARY_EVERY_N = 20     # update long-term summary every N user messages
@@ -93,10 +101,7 @@ async def handle_incoming_message(
                 user.health_data_consent_at = datetime.now(timezone.utc)
                 db.add(Message(user_id=user.id, role="user", content=text, whatsapp_message_id=wa_message_id))
                 await db.flush()
-                reply = (
-                    "Thank you. ✅ Consent recorded.\n\n"
-                    "Let's complete your profile first. Please tell me your name 😊"
-                )
+                reply = f"Thank you. ✅ Consent recorded.\n\n{QUESTIONS[ONBOARDING_ORDER[0]]}"
                 db.add(Message(user_id=user.id, role="assistant", content=reply))
                 await db.commit()
                 await send_text_message(phone, reply)
@@ -119,6 +124,16 @@ async def handle_incoming_message(
         if user.onboarding_complete:
             subscription = await get_active_subscription(db, user)
             if not subscription:
+                high_risk = detect_high_risk_profile(user.profile_dict())
+                if high_risk:
+                    logger.warning(
+                        "payment_prompt_blocked_high_risk_profile",
+                        user_id=user.id,
+                        phone=mask_identifier(phone),
+                        reason=high_risk,
+                    )
+                    await send_text_message(phone, high_risk_profile_message())
+                    return
                 await prompt_payment(db, user)
                 logger.info(
                     "conversation_payment_required",
@@ -164,228 +179,6 @@ async def handle_incoming_message(
 
 
 
-def _latest_assistant_context(history: list[dict] | None) -> str:
-    """Return the latest assistant turn so short replies can be interpreted in context."""
-    for turn in reversed(history or []):
-        if turn.get("role") == "assistant":
-            return re.sub(r"\s+", " ", str(turn.get("content") or "")).strip()
-    return ""
-
-
-def _deterministic_health_answers(
-    text: str,
-    missing_fields: list[str],
-    history: list[dict] | None = None,
-) -> dict[str, str]:
-    """Capture only high-confidence context-dependent health answers.
-
-    Gemini is the primary semantic extractor. This fallback exists for state-critical
-    answers that are obvious from the immediately preceding onboarding question, such
-    as a standalone ``no`` after "Do you have any allergies or medical conditions?".
-    It deliberately does not treat arbitrary ``no``/``nothing`` messages as health data.
-    """
-    normalized = re.sub(r"\s+", " ", text.casefold()).strip()
-    assistant_text = _latest_assistant_context(history).casefold()
-    result: dict[str, str] = {}
-
-    if not normalized or not assistant_text:
-        return result
-
-    allergy_context = bool(re.search(
-        r"\b(?:allerg(?:y|ies)|allergen(?:s)?|food sensitiv(?:ity|ities))\b",
-        assistant_text,
-    ))
-    medical_context = bool(re.search(
-        r"\b(?:medical (?:condition|conditions|issue|issues)|health (?:condition|conditions|issue|issues)|"
-        r"disease(?:s)?|health problem(?:s)?)\b",
-        assistant_text,
-    ))
-    combined_health_context = allergy_context and medical_context
-
-    # These are intentionally conservative high-confidence negative answers. Words such
-    # as "maybe", "I think", and "not really" are not treated as a definitive denial.
-    negative_answer = bool(re.fullmatch(
-        r"(?:no|nope|nah|none|nothing|nothing that i know of|"
-        r"i (?:do not|don't|dont) have (?:any|anything)|"
-        r"i (?:have|ve) no(?:thing)?(?: at all)?|"
-        r"there (?:is|are) none|"
-        r"no issues?|no problems?|nothing to report)",
-        normalized,
-    ))
-
-    def explicit_negative(term_pattern: str) -> bool:
-        return bool(re.search(
-            rf"(?:\b(?:no|none|without|don't have|dont have|do not have|never had)\b[^.?!;]*"
-            rf"\b{term_pattern}\b|\b{term_pattern}\b[^.?!;]*\b(?:no|none|without|don't have|dont have|do not have|never had)\b)",
-            normalized,
-        ))
-
-    allergy_term = r"(?:allerg(?:y|ies)|allergen(?:s)?)"
-    medical_term = r"(?:medical (?:condition|conditions|issue|issues)|health (?:condition|conditions|issue|issues)|disease(?:s)?|health problem(?:s)?)"
-
-    if "allergies" in missing_fields and allergy_context:
-        if negative_answer and (combined_health_context or not medical_context):
-            result["allergies"] = "None reported"
-        elif explicit_negative(allergy_term):
-            result["allergies"] = "None reported"
-
-    if "medical_conditions" in missing_fields and medical_context:
-        if negative_answer and (combined_health_context or not allergy_context):
-            result["medical_conditions"] = "None reported"
-        elif explicit_negative(medical_term):
-            result["medical_conditions"] = "None reported"
-
-    return result
-
-def _deterministic_profile_hints(
-    text: str,
-    history: list[dict] | None = None,
-) -> dict[str, object]:
-    """Extract only high-confidence profile facts from natural-language onboarding text.
-
-    This is intentionally conservative. Gemini remains the primary extractor, while this
-    layer catches common compact/messy formats and context-dependent answers so onboarding
-    cannot loop or silently lose explicitly stated profile facts.
-    """
-    normalized = re.sub(r"\s+", " ", text.casefold()).strip()
-    result: dict[str, object] = {}
-
-    # Name: only accept when introduced as a name/self-identification and followed by a
-    # clear profile token or end of sentence. This prevents phrases like "I am vegetarian"
-    # from becoming the user's name.
-    name_match = re.search(
-        r"\b(?:my name is|name is|i am|i'm|this is)\s+"
-        r"([a-z][a-z.'-]*(?:\s+[a-z][a-z.'-]*){0,4})"
-        r"(?=\s+(?:male|female|man|woman|m|f)\b|\s+\d{1,3}\s*(?:years?|yrs?|yo)\b|"
-        r"\s+\d{3}(?:\.\d+)?\s*cm\b|\s+\d{2,3}(?:\.\d+)?\s*kg\b|"
-        r"\s+(?:vegetarian|vegeterian|vegitarian|veg|vegan|non[- ]?veg|eggetarian|eggitarian)\b|"
-        r"\s+(?:desk job|office job|work from home)\b|\s+(?:and|,|;)|$)",
-        normalized,
-    )
-    if name_match:
-        candidate = name_match.group(1).strip(" ,;.-")
-        # Do not accept obvious non-name phrases.
-        blocked = {
-            "vegetarian", "vegeterian", "vegitarian", "veg", "vegan",
-            "male", "female", "man", "woman", "none", "no",
-            "very active", "active", "lightly active", "moderately active",
-            "looking to", "trying to", "going to", "not sure",
-        }
-        candidate_words = set(candidate.split())
-        non_name_words = {
-            "very", "active", "lightly", "moderately", "looking", "trying",
-            "want", "wants", "gain", "build", "lose", "maintain", "have",
-            "do", "work", "working", "from", "with", "at", "for", "and",
-        }
-        if (
-            candidate
-            and candidate not in blocked
-            and not candidate_words.intersection(non_name_words)
-        ):
-            result["name"] = candidate.title()
-
-    # Gender. Single-letter forms are accepted only as standalone tokens.
-    gender_match = re.search(r"\b(male|female|man|woman|m|f)\b", normalized)
-    if gender_match:
-        result["gender"] = {
-            "male": "male", "man": "male", "m": "male",
-            "female": "female", "woman": "female", "f": "female",
-        }[gender_match.group(1)]
-
-    # Age: prefer explicit age wording, then a number immediately after gender.
-    age_match = re.search(r"\bage\s*(?:is|:|-)?\s*(\d{1,3})\b", normalized)
-    if not age_match:
-        age_match = re.search(
-            r"\b(?:male|female|man|woman)\s*,?\s*(\d{1,3})\s*(?:years?|yrs?|yo)?\b",
-            normalized,
-        )
-    if not age_match:
-        age_match = re.search(r"\b(\d{1,3})\s*(?:years?|yrs?|yo)\b", normalized)
-    if age_match:
-        age = int(age_match.group(1))
-        if 1 <= age <= 120:
-            result["age"] = age
-
-    height_match = re.search(
-        r"\b(\d{3}(?:\.\d+)?)\s*(?:cm|cms|centimeters?|centimetres?)\b",
-        normalized,
-    )
-    if height_match:
-        height = float(height_match.group(1))
-        if 100 <= height <= 250:
-            result["height_cm"] = height
-
-    weight_match = re.search(
-        r"\b(\d{2,3}(?:\.\d+)?)\s*(?:kg|kgs|kilograms?)\b",
-        normalized,
-    )
-    if weight_match:
-        weight = float(weight_match.group(1))
-        if 20 <= weight <= 350:
-            result["weight_kg"] = weight
-
-    # Diet preference. Explicit terms win; never map vegetarian to vegan.
-    diet_patterns = [
-        (r"\b(?:non[- ]?veg|non[- ]?vegetarian|nonvegetarian)\b", "non_veg"),
-        (r"\b(?:eggetarian|eggitarian)\b", "eggetarian"),
-        (r"\bvegan\b", "vegan"),
-        (r"\b(?:vegetarian|vegeterian|vegitarian|veg)\b", "veg"),
-    ]
-    for pattern, value in diet_patterns:
-        if re.search(pattern, normalized):
-            result["diet_preference"] = value
-            break
-
-    # Goal. Use only common unambiguous phrases.
-    goal_patterns = [
-        (r"\b(?:gain muscle|gain muscles|build muscle|build muscles|put on muscle|muscle gain)\b", "muscle_gain"),
-        (r"\b(?:lose weight|lose fat|fat loss|weight loss)\b", "weight_loss"),
-        (r"\b(?:gain weight|put on weight|weight gain)\b", "weight_gain"),
-        (r"\bmaintain(?: weight)?\b", "maintain"),
-    ]
-    for pattern, value in goal_patterns:
-        if re.search(pattern, normalized):
-            result["goal"] = value
-            break
-
-    # Explicit activity labels.
-    activity_patterns = [
-        (r"\b(?:sedentary|inactive|not active|sedentry)\b", "sedentary"),
-        (r"\b(?:light(?:ly)? active)\b", "light"),
-        (r"\b(?:moderate(?:ly)? active)\b", "moderate"),
-        (r"\b(?:very active|active)\b", "active"),
-    ]
-    for pattern, value in activity_patterns:
-        if re.search(pattern, normalized):
-            result["activity_level"] = value
-            break
-
-    # A desk job is a useful low-activity signal. Only default to sedentary when the
-    # same message does not clearly describe regular exercise/physical activity.
-    desk_job = bool(re.search(r"\b(?:desk job|office job|work from home|wfh)\b", normalized))
-    regular_activity = bool(re.search(
-        r"\b(?:gym|workout|work out|exercise|running|jogging|cycling|sports?|training|walk(?:ing)?\s+daily|"
-        r"daily\s+(?:walk|exercise|workout)|regular(?:ly)?\s+(?:exercise|workout|train))\b",
-        normalized,
-    ))
-    negative_activity = bool(re.search(
-        r"\b(?:no|not|don't|dont|do not|never)\s+(?:exercise|workout|work out|gym|sports?|physical activity)\b",
-        normalized,
-    ))
-    if desk_job and (not regular_activity or negative_activity):
-        result["activity_level"] = "sedentary"
-
-    # Contextual one-word/no answer: if the assistant's recent question was clearly about
-    # exercise/activity and the user answers "no", classify the answer in that context only.
-    if normalized in {"no", "nope", "nah", "none", "not really", "i don't", "i dont"}:
-        recent_assistant = " ".join(
-            turn.get("content", "") for turn in (history or [])[-3:] if turn.get("role") == "assistant"
-        ).casefold()
-        if re.search(r"\b(?:activity|active|exercise|workout|work out|gym|physical activity)\b", recent_assistant):
-            result["activity_level"] = "sedentary"
-
-    return result
-
 def _apply_extracted_fields(user: User, extracted: dict) -> None:
     """FIX: food_dislikes is APPENDED to, never blindly overwritten — the model
     is asked to send the combined list, but this is a belt-and-suspenders guard
@@ -412,30 +205,45 @@ async def _handle_onboarding(
     db: AsyncSession, user: User, phone: str, text: str,
     history: list[dict], summary: str | None,
 ) -> None:
+    """Fully deterministic, LLM-free onboarding state machine.
+
+    One required field is targeted at a time (the first entry of
+    ``user.missing_fields()``, which is always in the same fixed order — see
+    app/services/onboarding_extract.ONBOARDING_ORDER). Every turn:
+
+      1. Parse the message with extract_fields_from_text(). The current
+         target field gets permissive parsing (bare numbers/words accepted);
+         every other still-missing field only matches unambiguous phrasing,
+         so a stray word never gets filed under the wrong question.
+      2. Apply whatever validated fields came out of that.
+      3. If the CURRENT target is still unanswered, re-send the exact same
+         question plus a short format hint and stop — we never advance,
+         never guess, and never silently drop the field. This is what
+         prevents both failure modes seen before: names getting mangled by
+         free-form LLM extraction, and the allergies/medical-conditions
+         question looping because a "no" variant didn't match a strict
+         fullmatch regex.
+      4. Otherwise move on to the next missing field, or finish onboarding.
+
+    No Gemini call happens anywhere in this path, so there is nothing here
+    that can behave differently between two identical inputs.
+    """
     from app.redis_client import get_arq_pool
 
-    profile = user.profile_dict()
     missing = user.missing_fields()
+    current_target = missing[0] if missing else None
 
-    # LLM remains the natural-language extractor, but high-confidence deterministic
-    # hints protect state-critical onboarding from spelling/format noise and context-only
-    # answers such as a standalone "no" after an exercise question.
-    deterministic_health = _deterministic_health_answers(text, missing, history)
-    deterministic_profile = _deterministic_profile_hints(text, history)
-    deterministic = {**deterministic_profile, **deterministic_health}
-
-    reply, extracted = await run_onboarding_turn(
-        profile, missing, history, text, summary, explicit_fields=deterministic
-    )
-    if deterministic:
-        extracted = {**extracted, **deterministic}
-        logger.info(
-            "deterministic_onboarding_fields_extracted",
-            fields=sorted(deterministic),
-            user_id=user.id,
-        )
-
-    _apply_extracted_fields(user, extracted)
+    extracted: dict = {}
+    if current_target:
+        extracted = extract_fields_from_text(text, current_target, missing, history)
+        if extracted:
+            logger.info(
+                "onboarding_fields_extracted",
+                fields=sorted(extracted),
+                target=current_target,
+                user_id=user.id,
+            )
+        _apply_extracted_fields(user, extracted)
 
     # Personalized plans are adult-only. Keep the conversation open so the user
     # can correct an accidentally extracted age later, but never enqueue a plan
@@ -450,22 +258,53 @@ async def _handle_onboarding(
         await send_text_message(phone, reply)
         return
 
-    just_completed = (not user.onboarding_complete) and (not user.missing_fields())
+    missing_after = user.missing_fields()
+
+    # The current target field is still unanswered -> hold position. Re-ask
+    # the exact same question (with a short hint), do not advance, and do
+    # not lose any *other* fields we may have opportunistically captured
+    # above (they were already applied via _apply_extracted_fields).
+    if current_target and current_target in missing_after:
+        hint = RETRY_HINTS.get(current_target, "")
+        question = QUESTIONS.get(current_target, "")
+        reply = f"{hint}\n\n{question}".strip() if hint else question
+        db.add(Message(user_id=user.id, role="assistant", content=reply))
+        await db.commit()
+        await send_text_message(phone, reply)
+        return
+
+    just_completed = (not user.onboarding_complete) and (not missing_after)
+    just_completed_high_risk = False
     if just_completed:
         user.onboarding_complete = True
-        reply = (
-            f"Perfect, {user.name or 'there'}! ✅ Your profile is complete.\n\n"
-            "Your personalized daily diet and exercise plan is now being generated based on "
-            "your goals and preferences. 🌿"
-        )
+        high_risk = detect_high_risk_profile(user.profile_dict())
+        if high_risk:
+            just_completed_high_risk = True
+            logger.warning(
+                "onboarding_complete_high_risk_profile",
+                user_id=user.id,
+                reason=high_risk,
+            )
+            reply = high_risk_profile_message()
+        else:
+            reply = (
+                "Perfect! ✅ Your profile is complete.\n\n"
+                "Your personalized daily diet and exercise plan is now being generated based on "
+                "your goals and preferences. 🌿"
+            )
+    else:
+        next_field = missing_after[0]
+        reply = QUESTIONS.get(next_field, "Could you share a bit more about yourself? 😊")
 
     db.add(Message(user_id=user.id, role="assistant", content=reply))
     await db.commit()
     await send_text_message(phone, reply)
 
-    # Ask for payment only after onboarding is fully complete. If the user already
-    # has an active subscription, preserve the existing immediate plan generation path.
-    if just_completed:
+    # Ask for payment only after onboarding is fully complete, and only when the
+    # profile isn't flagged high-risk — a high-risk profile must never reach the
+    # payment prompt or automated plan generation (see high_risk_profile_message()
+    # sent above instead).
+    if just_completed and not just_completed_high_risk:
         subscription = await get_active_subscription(db, user)
         if subscription:
             pool = await get_arq_pool()
@@ -508,141 +347,268 @@ def _food_dislike_items(value: str | None) -> set[str]:
     return {item.strip().casefold() for item in re.split(r"[,;|]", value) if item.strip()}
 
 
-def _today_plan_change_request(
-    text: str,
-    history: list[dict],
-    new_dislikes: set[str],
-) -> tuple[str | None, str | None]:
-    """Detect an explicit same-day plan change without affecting ordinary Q&A."""
-    normalized = re.sub(r"\s+", " ", text.casefold()).strip()
+def _format_profile_recall(user: User, fields: list[str]) -> str:
+    """Render only profile facts explicitly requested by the user."""
+    labels = {
+        "name": "Name",
+        "age": "Age",
+        "gender": "Gender",
+        "height_cm": "Height",
+        "weight_kg": "Weight",
+        "activity_level": "Activity level",
+        "goal": "Goal",
+        "diet_preference": "Diet preference",
+        "allergies": "Allergies",
+        "medical_conditions": "Medical conditions",
+        "food_dislikes": "Food dislikes",
+    }
+    values = user.profile_dict()
+    visible: list[str] = []
+    for field in fields:
+        value = values.get(field)
+        if value in (None, ""):
+            continue
+        if field in {"height_cm", "weight_kg"}:
+            suffix = " cm" if field == "height_cm" else " kg"
+            value = f"{value}{suffix}"
+        elif field in {"goal", "activity_level", "diet_preference"}:
+            value = str(value).replace("_", " ")
+        visible.append(f"{labels[field]}: {value}")
 
-    if new_dislikes:
-        foods = ", ".join(sorted(new_dislikes))
-        return (
-            "food_dislike",
-            f"User explicitly added these foods to their dislikes: {foods}. "
-            "Regenerate today's existing plan so these foods do not appear in meal ingredients. "
-            "Preserve all allergies, diet preference, medical safety, goal, and other constraints.",
-        )
+    if not visible:
+        return "I don't have that detail saved yet."
+    if len(visible) == 1:
+        label, value = visible[0].split(":", 1)
+        return f"Your saved {label.lower()} is {value.strip()}."
+    return "Here are the details I currently have saved for you:\n" + "\n".join(f"• {item}" for item in visible)
 
-    fast_words = r"\b(?:fast|fasting)\b"
-    today_words = r"\b(?:today)\b"
-    fasting_food_details = r"\b(?:allowed|allow|not allowed|avoid|only|fruits?|dairy|milk|sabudana|sago|nuts?|dry fruits?)\b"
 
-    if re.search(fast_words, normalized) and re.search(today_words, normalized):
-        if re.search(fasting_food_details, normalized):
-            return (
-                "fast",
-                "User says they are fasting today and explicitly provided fasting food permissions/restrictions "
-                f"in the current message: {text.strip()}. Use ONLY what the user explicitly stated. "
-                "Do not invent or assume religion-specific fasting rules. Preserve all other profile and safety constraints.",
-            )
-        return "fast_needs_details", None
+def _trusted_profile_updates(route) -> dict:
+    """Convert semantic extraction into validated DB fields, with a strict write gate."""
+    raw: dict = {}
+    for candidate in route.profile_updates:
+        # LLM output is advisory. Persistence requires high confidence plus current-turn evidence.
+        if candidate.confidence < settings.conversation_profile_update_min_confidence:
+            continue
+        if not candidate.evidence.strip() or not candidate.value.strip():
+            continue
+        raw[candidate.field] = candidate.value
 
-    # The user may answer the bot's fasting clarification on the next turn with
-    # only the allowed foods. Recent user history supplies the fasting context.
-    recent_user_text = " ".join(
-        turn.get("content", "") for turn in history[-4:] if turn.get("role") == "user"
-    ).casefold()
-    if re.search(fast_words, recent_user_text) and re.search(fasting_food_details, normalized):
-        return (
-            "fast",
-            "The user previously said they are fasting today and has now provided fasting food permissions/restrictions. "
-            f"Use ONLY the current user's stated fasting details: {text.strip()}. "
-            "Do not invent or assume religion-specific fasting rules. Preserve all other profile and safety constraints.",
-        )
+    if not raw:
+        return {}
+    return validate_extracted_fields(raw)
 
-    return None, None
+
+def _resolve_plan_request(route, history: list[dict]) -> tuple[int | None, date | None, str, str | None]:
+    """Resolve semantic plan references against the application clock; never trust model-supplied dates blindly."""
+    from datetime import date as date_type
+
+    reference = route.plan_reference
+    day_number = route.plan_day_number
+    plan_date = None
+
+    if reference == "day_number":
+        if not day_number or day_number < 1:
+            return None, None, route.plan_scope, route.plan_section
+        return int(day_number), None, route.plan_scope, route.plan_section
+
+    if reference in {"today", "yesterday", "tomorrow"}:
+        today = datetime.now(ZoneInfo("Asia/Kolkata")).date()
+        offsets = {"today": 0, "yesterday": -1, "tomorrow": 1}
+        return None, today + timedelta(days=offsets[reference]), route.plan_scope, route.plan_section
+
+    if reference == "date" and route.plan_date:
+        try:
+            plan_date = date_type.fromisoformat(route.plan_date)
+        except ValueError:
+            return None, None, route.plan_scope, route.plan_section
+        return None, plan_date, route.plan_scope, route.plan_section
+
+    # For ambiguous contextual references, ask the model only through the router's
+    # clarification path; the database handler never guesses a date/day.
+    return None, None, route.plan_scope, route.plan_section
 
 
 async def _handle_general_qa(
     db: AsyncSession, user: User, phone: str, text: str,
     history: list[dict], summary: str | None,
 ) -> None:
+    """Production conversation orchestrator: classify -> validate -> execute -> answer."""
+    from app.llm.gemini_client import classify_conversation
+
+    try:
+        route = await classify_conversation(
+            profile=user.profile_dict(),
+            history=history,
+            user_message=text,
+            summary=summary,
+        )
+        from app.llm.route_policy import normalize_conversation_route
+        route = normalize_conversation_route(route)
+    except Exception:
+        logger.exception("conversation_router_failed", user_id=user.id)
+        route = None
+
+    if route is None:
+        # Fail open to ordinary grounded conversation, but still use the conservative
+        # response-context boundary so a router outage cannot dump the full profile/history.
+        response_profile, response_history, response_summary = build_response_context(
+            user.profile_dict(), history, summary, None
+        )
+        reply, _, _ = await run_general_qa(
+            response_profile, response_history, text, response_summary, grounding_required=True
+        )
+        db.add(Message(user_id=user.id, role="assistant", content=reply))
+        await db.commit()
+        await send_text_message(phone, reply)
+        return
+
+    # Read-only profile recall is deterministic after semantic classification.
+    if route.intent == "profile_recall" and route.confidence >= settings.conversation_route_min_confidence:
+        fields = list(route.profile_fields)
+        if fields:
+            reply = _format_profile_recall(user, fields)
+            db.add(Message(user_id=user.id, role="assistant", content=reply))
+            await db.commit()
+            await send_text_message(phone, reply)
+            return
+
+    # Explicit saved-plan retrieval is also deterministic. The LLM only resolves
+    # language into a plan reference; it never fabricates or edits stored content.
+    if route.intent == "saved_plan_retrieval" and route.confidence >= settings.conversation_route_min_confidence:
+        from app.services.diet_plan_service import get_historical_plan
+        day_number, plan_date, scope, section = _resolve_plan_request(route, history)
+        plan = None
+        if day_number is not None:
+            plan = await get_historical_plan(db, user.id, day_number=day_number)
+        elif plan_date is not None:
+            plan = await get_historical_plan(db, user.id, local_date=plan_date)
+
+        if plan and plan.content:
+            if scope == "section" and section:
+                # Keep the stored plan immutable; ask no LLM to regenerate it.
+                # A lightweight exact-section extractor is used only for known headings.
+                section_map = {
+                    "breakfast": "*Breakfast:*",
+                    "mid_morning_snack": "*Mid-morning:*",
+                    "mid morning snack": "*Mid-morning:*",
+                    "lunch": "*Lunch:*",
+                    "evening_snack": "*Evening snack:*",
+                    "evening snack": "*Evening snack:*",
+                    "dinner": "*Dinner:*",
+                    "exercise": "*Exercise:*",
+                    "hydration": "*Hydration & routine:*",
+                }
+                heading = section_map.get(section.casefold().strip())
+                if heading and heading in plan.content:
+                    # Extract the selected labeled section without changing stored data.
+                    after = plan.content.split(heading, 1)[1].lstrip()
+                    next_marker = re.search(r"\n\n(?:🍎|🍛|☕|🥗|🏃|💧|⚠️|🍳)\s*\*[^*]+\*:", after)
+                    body = after[:next_marker.start()] if next_marker else after
+                    reply = f"From your saved *Day {plan.day_number}* plan:\n\n{heading} {body.strip()}"
+                else:
+                    reply = f"Here is your saved *Day {plan.day_number}* diet plan. 🌿\n\n{plan.content}"
+            else:
+                reply = f"Here is your saved *Day {plan.day_number}* diet plan. 🌿\n\n{plan.content}"
+        elif day_number is not None:
+            reply = f"I don't have a saved Day {day_number} diet plan yet."
+        else:
+            reply = "I don't have a saved diet plan for that date yet."
+
+        db.add(Message(user_id=user.id, role="assistant", content=reply))
+        await db.commit()
+        await send_text_message(phone, reply)
+        return
+
+    # Persist only semantically explicit, high-confidence updates from the current turn.
     previous_dislikes = _food_dislike_items(user.food_dislikes)
-    reply, extracted, plan_request = await run_general_qa(
-        user.profile_dict(), history, text, summary
-    )
-    _apply_extracted_fields(user, extracted)
+    trusted_updates = _trusted_profile_updates(route)
+    if trusted_updates:
+        _apply_extracted_fields(user, trusted_updates)
+        await db.commit()
+
     new_dislikes = _food_dislike_items(user.food_dislikes) - previous_dislikes
 
-    # Historical-plan retrieval always wins. A request for an old plan must never
-    # be converted into a current-day revision.
-    change_kind, modification_instruction = (None, None)
-    if plan_request is None:
-        change_kind, modification_instruction = _today_plan_change_request(
-            text, history, new_dislikes
-        )
-
-    # Historical diet plans are factual database records. Never ask Gemini to
-    # recreate them; retrieve the exact stored content by immutable day/date.
-    revised_plan = None
-    if change_kind == "fast_needs_details":
-        reply = (
-            "Understood — you are fasting today. 🙏 Which foods are allowed during your fast "
-            "(for example, fruits, dairy, sabudana, nuts, etc.)? Please tell me, and I will update "
-            "today's plan accordingly."
-        )
-    elif modification_instruction:
+    # Same-day plan modification is a domain side effect. Only do it after the
+    # semantic router explicitly classifies the request as a plan modification
+    # AND actually extracted an explicit instruction. FIX: previously this
+    # branch also fired when plan_modification had no instruction, and sent
+    # route.clarification_question -- an ungoverned free-text field the router
+    # fills with no context-consistency guidance -- straight to the user with
+    # no further check. In production this produced replies that flatly denied
+    # an action the assistant's own immediately preceding message confirmed it
+    # had just taken. A message with no real instruction (a question about, or
+    # pushback on, a previous plan update) now simply falls through to the
+    # ordinary conversational path below, which has real history/profile
+    # context and dialogue_act awareness instead of a single unguided guess.
+    if (
+        route.intent == "plan_modification"
+        and route.confidence >= settings.conversation_route_min_confidence
+        and route.modification_instruction
+    ):
         from app.services.diet_plan_service import revise_today_plan, _send_plan
+
+        instruction = route.modification_instruction
+        if new_dislikes:
+            instruction = (
+                f"{instruction} Additionally, the user explicitly added these food dislikes: "
+                f"{', '.join(sorted(new_dislikes))}. Do not include them in today's plan."
+            )
+
+        revision = None
         try:
-            revised_plan = await revise_today_plan(db, user, modification_instruction)
+            revision = await revise_today_plan(db, user, instruction)
         except Exception:
             logger.exception(
                 "today_plan_revision_failed",
                 user_id=user.id,
-                change_kind=change_kind,
-            )
-            revised_plan = None
-
-        if revised_plan:
-            reply = "Done ✅ Today's diet plan has been updated according to your latest preference. The new plan is below. 🌿"
-        else:
-            reply = (
-                "I have noted your preference. Today's saved plan could not be updated right now, "
-                "but your preference will be followed in future plans."
+                reason="semantic_plan_modification",
             )
 
-    if plan_request:
-        from app.services.diet_plan_service import get_historical_plan
-
-        plan = None
-        day_number = plan_request.get("day_number")
-        if day_number is not None:
-            try:
-                day_number = int(day_number)
-                if day_number >= 1:
-                    plan = await get_historical_plan(
-                        db, user.id, day_number=day_number
-                    )
-            except (TypeError, ValueError):
-                plan = None
-
-        if plan is None and plan_request.get("plan_date"):
-            try:
-                requested_date = date.fromisoformat(str(plan_request["plan_date"]))
-                plan = await get_historical_plan(
-                    db, user.id, local_date=requested_date
+        if revision and revision.plan:
+            if revision.is_duplicate:
+                # FIX: the same/near-same instruction was already applied a
+                # short while ago (see plan_revision_policy.py). Say so
+                # honestly instead of claiming a fresh update just happened,
+                # and reuse the existing plan instead of regenerating another
+                # different-but-equivalent version.
+                reply = (
+                    "Looks like I already updated today's plan for that a little while ago — "
+                    "here's the current version. 🌿"
                 )
-            except ValueError:
-                plan = None
+            else:
+                reply = "Done ✅ I updated today's saved plan based on your latest request. The updated plan is below. 🌿"
+            db.add(Message(user_id=user.id, role="assistant", content=reply))
+            await db.commit()
+            await send_text_message(phone, reply)
+            await _send_plan(user, revision.plan)
+            return
 
-        if plan and plan.content:
-            reply = (
-                f"Here is your saved *Day {plan.day_number}* diet plan. 🌿\n\n"
-                f"{plan.content}"
-            )
-        else:
-            requested = (
-                f"Day {day_number}" if day_number else "us date ka"
-            )
-            reply = (
-                f"I could not find a saved diet plan for {requested}. "
-                "I can show you your current plan instead. 😊"
-            )
+        reply = (
+            "I noted your request, but I couldn't update today's saved plan right now. "
+            "Your preference is saved and will be respected in future plans."
+        )
+        db.add(Message(user_id=user.id, role="assistant", content=reply))
+        await db.commit()
+        await send_text_message(phone, reply)
+        return
 
+    # Everything else is ordinary conversational generation. The semantic route
+    # chooses the minimum relevant state/history for the final answer; the full
+    # profile and raw rolling window are never blindly injected.
+    response_profile, response_history, response_summary = build_response_context(
+        user.profile_dict(), history, summary, route
+    )
+    reply, _, _ = await run_general_qa(
+        response_profile,
+        response_history,
+        text,
+        response_summary,
+        grounding_required=bool(route.grounding_required),
+        allow_profile_update_tool=False,
+        dialogue_act=getattr(route, "dialogue_act", "request"),
+    )
     db.add(Message(user_id=user.id, role="assistant", content=reply))
     await db.commit()
     await send_text_message(phone, reply)
-    if revised_plan is not None:
-        await _send_plan(user, revised_plan)
+

@@ -18,6 +18,7 @@ from app.knowledge.retrieval import (
 )
 from app.knowledge.safety import detect_red_flag, emergency_response
 from app.knowledge.store import KnowledgeBaseNotReady
+from app.llm.conversation_schemas import ConversationRoute
 from app.llm.prompts import (
     ONBOARDING_SYSTEM_PROMPT,
     GENERAL_QA_SYSTEM_PROMPT,
@@ -25,14 +26,22 @@ from app.llm.prompts import (
     DIET_PLAN_REVISION_PROMPT,
     SUMMARY_UPDATE_PROMPT,
     UPDATE_PROFILE_FUNCTION,
-    GET_DIET_PLAN_FUNCTION,
+    CONVERSATION_ROUTER_PROMPT,
 )
 from app.llm.schemas import DietPlanOutput
 from app.services.plan_validation import validate_plan
 
+
+class PlanGenerationValidationError(RuntimeError):
+    """The model returned a structurally valid plan that failed app safety constraints."""
+
+    def __init__(self, problems: list[str]):
+        self.problems = problems
+        super().__init__("Generated plan failed deterministic safety/constraint validation.")
+
+
 client = genai.Client(api_key=settings.gemini_api_key)
 _update_profile_tool = types.Tool(function_declarations=[UPDATE_PROFILE_FUNCTION])
-_get_diet_plan_tool = types.Tool(function_declarations=[GET_DIET_PLAN_FUNCTION])
 
 
 def _history_to_contents(history: list[dict]) -> list[types.Content]:
@@ -50,7 +59,6 @@ async def _generate(model: str, contents, config) -> types.GenerateContentRespon
 
 def _extract_function_calls(response: types.GenerateContentResponse):
     extracted: dict = {}
-    diet_plan_request: dict | None = None
     tool_calls: list[tuple[str, dict, str | None]] = []
     candidate = response.candidates[0]
     reply_text = ""
@@ -60,13 +68,10 @@ def _extract_function_calls(response: types.GenerateContentResponse):
             args = {k: v for k, v in fn.args.items() if v not in (None, "")}
             name = getattr(fn, "name", "")
             tool_calls.append((name, args, getattr(fn, "id", None)))
-            if name == "get_diet_plan":
-                diet_plan_request = args
-            else:
-                extracted.update(args)
+            extracted.update(args)
         if getattr(part, "text", None):
             reply_text += part.text
-    return extracted, diet_plan_request, candidate.content, reply_text, tool_calls
+    return extracted, None, candidate.content, reply_text, tool_calls
 
 
 async def _tool_followup(contents, candidate_content, tool_calls, system_prompt: str) -> str:
@@ -125,7 +130,11 @@ async def run_onboarding_turn(
     response = await _generate(
         settings.gemini_model_chat,
         contents,
-        types.GenerateContentConfig(system_instruction=system_prompt, tools=[_update_profile_tool]),
+        types.GenerateContentConfig(
+            system_instruction=system_prompt,
+            tools=[_update_profile_tool],
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+        ),
     )
     extracted, _, candidate_content, reply_text, tool_calls = _extract_function_calls(response)
     if tool_calls and extracted and not reply_text and candidate_content:
@@ -154,50 +163,63 @@ async def run_onboarding_turn(
     return reply_text or "Understood. Let's continue.", extracted
 
 
-async def run_general_qa(profile, history, user_message, summary=None):
+async def run_general_qa(profile, history, user_message, summary=None, allow_profile_update_tool=False, grounding_required=True, dialogue_act="request"):
     red_flag = detect_red_flag(user_message)
     if red_flag:
         return emergency_response(), {}, None
 
-    try:
-        knowledge_context = await retrieve_general_context(profile, user_message, top_k=settings.knowledge_top_k_qa)
-    except KnowledgeBaseNotReady:
-        return (
-            "I do not have enough verified health knowledge context to answer safely right now, so I will not guess. "
-            "Please try again later.",
-            {},
-            None,
-        )
+    if grounding_required:
+        try:
+            knowledge_context = await retrieve_general_context(profile, user_message, top_k=settings.knowledge_top_k_qa)
+        except KnowledgeBaseNotReady:
+            return (
+                "I do not have enough verified health knowledge context to answer safely right now, so I will not guess. "
+                "Please try again later.",
+                {},
+                None,
+            )
+    else:
+        knowledge_context = "Not required for this conversational turn."
 
     system_prompt = GENERAL_QA_SYSTEM_PROMPT.format(
         today_date=datetime.now(ZoneInfo("Asia/Kolkata")).date().isoformat(),
         profile=profile,
         summary=summary or "No summary yet.",
         knowledge_context=knowledge_context,
+    ) + (
+        "\n\nCURRENT DIALOGUE ACT: " + str(dialogue_act) +
+        "\nTreat this as authoritative application metadata. If it is 'request', answer only the current request. "
+        "If it is 'follow_up', use only the selected preceding context to resolve the follow-up. "
+        "If it is 'accept_offer', directly fulfill the specific offer from the immediately preceding assistant turn. "
     )
     contents = _history_to_contents(history)
     contents.append(types.Content(role="user", parts=[types.Part(text=user_message)]))
+    # Historical plan retrieval is intentionally NOT an LLM tool. Explicit saved-plan
+    # requests are routed deterministically by conversation_service before Gemini is called.
+    tools = [_update_profile_tool] if allow_profile_update_tool else []
     response = await _generate(
         settings.gemini_model_chat,
         contents,
         types.GenerateContentConfig(
             system_instruction=system_prompt,
-            tools=[_update_profile_tool, _get_diet_plan_tool],
+            **({"tools": tools} if tools else {}),
+            **({"automatic_function_calling": types.AutomaticFunctionCallingConfig(disable=True)} if tools else {}),
         ),
     )
-    extracted, plan_request, candidate_content, reply_text, tool_calls = _extract_function_calls(response)
+    extracted, _plan_request_unused, candidate_content, reply_text, tool_calls = _extract_function_calls(response)
 
     if tool_calls and extracted and not reply_text and candidate_content:
         update_calls = [call for call in tool_calls if call[0] == "update_profile"]
         reply_text = await _tool_followup(contents, candidate_content, update_calls, system_prompt)
-    elif not reply_text and not plan_request and candidate_content:
+    elif not reply_text and candidate_content:
         reply_text = await _tool_followup(contents, candidate_content, [], system_prompt)
 
-    return reply_text or "Sorry, I could not understand that. Could you please rephrase?", extracted, plan_request
+    return reply_text or "Sorry, I could not understand that. Could you please rephrase?", extracted, None
 
 
 async def generate_diet_plan(
-    profile, recent_meals, summary=None, day_number=1, modification_instruction: str | None = None
+    profile, recent_meals, summary=None, day_number=1, modification_instruction: str | None = None,
+    current_plan_text: str | None = None,
 ) -> str:
     try:
         diet_context = await retrieve_diet_context(
@@ -226,6 +248,10 @@ async def generate_diet_plan(
     }
     if modification_instruction:
         prompt_values["modification_instruction"] = modification_instruction
+        # FIX: the revision prompt now actually shows the model what it's
+        # editing, instead of asking it to "apply this to today's existing
+        # plan" while giving it no idea what that plan contains.
+        prompt_values["current_plan_text"] = current_plan_text or "No current plan text available."
     base_prompt = prompt_template.format(**prompt_values)
 
     repair_feedback = ""
@@ -245,14 +271,43 @@ async def generate_diet_plan(
         try:
             plan = DietPlanOutput.model_validate_json(response.text)
         except (ValidationError, TypeError, json.JSONDecodeError) as exc:
-            repair_feedback = f"Return valid structured plan fields only. Parsing error: {str(exc)[:300]}"
+            repair_feedback = (
+                "Return valid structured plan fields only. "
+                f"Parsing error: {str(exc)[:300]}"
+            )
+            logger.warning(
+                "diet_plan_structured_output_invalid",
+                day_number=day_number,
+                attempt=attempt + 1,
+                error=str(exc)[:500],
+            )
             continue
+
         problems = validate_plan(plan, profile)
         if not problems:
             return _render_plan(plan, day_number)
-        repair_feedback = "; ".join(problems[:12])
 
-    raise KnowledgeBaseNotReady("Generated plan failed deterministic safety/constraint validation.")
+        logger.warning(
+            "diet_plan_deterministic_validation_failed",
+            day_number=day_number,
+            attempt=attempt + 1,
+            problems=problems[:20],
+        )
+        repair_feedback = (
+            "The previous plan violated these application constraints: "
+            + "; ".join(problems[:20])
+            + ". Regenerate the complete plan and remove every violating ingredient "
+            "from all meal fields. Do not mention the rejected ingredient as an ingredient "
+            "or meal component; choose a compliant alternative instead."
+        )
+
+    logger.error(
+        "diet_plan_generation_validation_exhausted",
+        day_number=day_number,
+        attempts=2,
+        problems=problems[:20] if 'problems' in locals() else ["unknown_validation_failure"],
+    )
+    raise PlanGenerationValidationError(problems if 'problems' in locals() else ["unknown_validation_failure"])
 
 
 def _render_plan(plan: DietPlanOutput, day_number: int) -> str:
@@ -272,7 +327,13 @@ def _render_plan(plan: DietPlanOutput, day_number: int) -> str:
 async def update_conversation_summary(existing_summary, recent_messages):
     if not recent_messages:
         return existing_summary or ""
-    formatted = "\n".join(f"{m['role'].upper()}: {m['content']}" for m in recent_messages)
+    # Durable memory should be built from user-authored facts rather than assistant
+    # replies. This prevents profile-recall boilerplate and saved-plan payloads from
+    # becoming self-reinforcing context in later conversations.
+    user_messages = [m for m in recent_messages if m.get("role") == "user"]
+    if not user_messages:
+        return existing_summary or ""
+    formatted = "\n".join(f"USER: {m['content']}" for m in user_messages)
     prompt = SUMMARY_UPDATE_PROMPT.format(
         existing_summary=existing_summary or "None",
         recent_messages=formatted,
@@ -287,3 +348,39 @@ async def update_conversation_summary(existing_summary, recent_messages):
 
 async def close_client() -> None:
     await client.aio.aclose()
+
+
+async def classify_conversation(
+    profile: dict,
+    history: list[dict],
+    user_message: str,
+    summary: str | None = None,
+) -> ConversationRoute:
+    """Semantic routing with structured output. No side effects occur here."""
+    recent = history[-8:] if history else []
+    formatted_history = "\n".join(
+        f"{item.get('role', '').upper()}: {item.get('content', '')}" for item in recent
+    ) or "No recent conversation."
+
+    prompt = CONVERSATION_ROUTER_PROMPT.format(
+        user_message=user_message,
+        history=formatted_history,
+        summary=summary or "No long-term summary yet.",
+        profile=profile,
+    )
+
+    response = await _generate(
+        settings.gemini_model_router,
+        [types.Content(role="user", parts=[types.Part(text=prompt)])],
+        types.GenerateContentConfig(
+            temperature=0,
+            max_output_tokens=256,
+            response_mime_type="application/json",
+            response_schema=ConversationRoute,
+        ),
+    )
+
+    try:
+        return ConversationRoute.model_validate_json(response.text)
+    except (ValidationError, TypeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Conversation router returned invalid structured output: {exc}") from exc

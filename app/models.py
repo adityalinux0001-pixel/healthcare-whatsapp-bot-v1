@@ -63,8 +63,10 @@ class User(Base):
 
     # Health-safety questions are explicit completion requirements. An explicit
     # "none" answer satisfies the requirement just like a non-empty answer.
+    # NOTE: onboarding no longer collects "name" — the column stays (nullable,
+    # unused going forward) only so existing rows and the admin panel keep working.
     REQUIRED_FIELDS = [
-        "name", "age", "gender", "height_cm", "weight_kg",
+        "age", "gender", "height_cm", "weight_kg",
         "activity_level", "goal", "diet_preference",
     ]
 
@@ -168,6 +170,13 @@ class DietPlan(Base):
     last_send_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     provider_message_id: Mapped[str | None] = mapped_column(String(150), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # FIX: tracks the most recent semantic plan-modification instruction applied
+    # to this row, and when. Lets revise_today_plan recognize a near-duplicate
+    # request (e.g. the user restating the same complaint because a prior reply
+    # confused them) and reuse the existing plan instead of silently
+    # regenerating a different-but-equivalent one via a fresh LLM call each time.
+    last_modification_instruction: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_modified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         UniqueConstraint("user_id", "plan_date", name="uq_diet_plan_user_date"),

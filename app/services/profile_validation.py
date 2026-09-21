@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import re
@@ -70,7 +69,6 @@ _GENDER_ALIASES = {
 }
 
 _TEXT_LIMITS = {
-    "name": 100,
     "gender": 30,
     "allergies": 1000,
     "medical_conditions": 1500,
@@ -117,7 +115,7 @@ def validate_extracted_fields(extracted: dict[str, Any]) -> dict[str, Any]:
     clean: dict[str, Any] = {}
 
     if "name" in extracted:
-        value = _clean_text(extracted["name"], _TEXT_LIMITS["name"])
+        value = _clean_text(extracted["name"], 100)
         if value:
             clean["name"] = value
 

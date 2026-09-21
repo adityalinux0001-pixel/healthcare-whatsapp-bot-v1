@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import re
@@ -38,9 +37,11 @@ _NEGATION_SUFFIXES = (
 )
 
 _HIGH_RISK_PATTERNS = (
-    "pregnant", "pregnancy", "pregnancy", "dialysis", "kidney failure", "renal failure",
+    "pregnant", "pregnancy", "dialysis", "kidney failure", "renal failure",
     "eating disorder", "anorexia", "bulimia", "heart failure", "recent surgery",
     "post surgery", "organ transplant",
+    "cancer", "chemotherapy", "chemo", "oncology", "tumor", "tumour",
+    "radiation therapy", "leukemia", "leukaemia", "lymphoma",
 )
 
 
@@ -68,9 +69,9 @@ def detect_red_flag(text: str) -> str | None:
 
 
 def detect_high_risk_profile(profile: dict) -> str | None:
-    text = str(profile.get("medical_conditions") or "").casefold()
+    normalized = re.sub(r"\s+", " ", str(profile.get("medical_conditions") or "").casefold()).strip()
     for pattern in _HIGH_RISK_PATTERNS:
-        if pattern in text:
+        if pattern in normalized and not _is_negated(normalized, pattern):
             return pattern
     return None
 
@@ -80,6 +81,17 @@ def emergency_response() -> str:
         "⚠️ The information you provided may describe an urgent symptom. "
         "I cannot safely diagnose or manage this as a routine diet/exercise question. "
         "Please seek urgent medical evaluation, and contact local emergency services if symptoms are severe or worsening."
+    )
+
+
+def high_risk_profile_message() -> str:
+    return (
+        "Thank you for sharing that. 🌿 Based on the health information in your profile, "
+        "an automated diet/exercise plan is not something I can safely generate for you — "
+        "this needs guidance from a doctor or registered dietitian who knows your medical history.\n\n"
+        "I won't be asking for payment or generating a plan on this account. "
+        "Please do consult a qualified healthcare professional for advice suited to your condition. "
+        "I'm still here if you have general questions."
     )
 
 

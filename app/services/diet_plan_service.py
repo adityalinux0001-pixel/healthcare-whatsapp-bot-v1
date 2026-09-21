@@ -1,6 +1,7 @@
 """Daily personalized diet/exercise plan lifecycle."""
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone, time
 from zoneinfo import ZoneInfo
 
@@ -13,8 +14,21 @@ from app.config import settings
 from app.database import AsyncSessionLocal
 from app.models import User, DietPlan, Message
 from app.llm.gemini_client import generate_diet_plan
+from app.services.plan_revision_policy import is_duplicate_modification
 from app.whatsapp.client import send_text_message, send_template_message
 from app.utils.logging_config import logger
+
+
+@dataclass
+class PlanRevisionResult:
+    """Result of a same-day plan revision attempt.
+
+    is_duplicate=True means the existing plan was reused as-is because the
+    instruction matched one already applied a short while ago -- the caller
+    should say so rather than claiming a fresh update just happened.
+    """
+    plan: DietPlan | None
+    is_duplicate: bool = False
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -291,6 +305,8 @@ async def generate_plan_for_user(user_id: int, *, prefer_text: bool = False) -> 
                 user_id=user_id,
                 reason=high_risk,
             )
+            from app.knowledge.safety import high_risk_profile_message
+            await send_text_message(user.phone_number, high_risk_profile_message())
             return
 
         recent = await _recent_meals(db, user_id)
@@ -319,12 +335,12 @@ async def revise_today_plan(
     db: AsyncSession,
     user: User,
     modification_instruction: str,
-) -> DietPlan | None:
+) -> PlanRevisionResult:
     """Revise today's existing plan only when explicitly requested by the user."""
     from app.knowledge.safety import detect_high_risk_profile
 
     if not modification_instruction.strip():
-        return None
+        return PlanRevisionResult(plan=None)
 
     today = _plan_day_utc()
 
@@ -338,12 +354,12 @@ async def revise_today_plan(
     )
 
     if not plan or not plan.content:
-        return None
+        return PlanRevisionResult(plan=None)
 
     # Do not modify a plan while delivery is in progress or its external outcome
     # is unknown. The explicit request can safely be retried later.
     if plan.delivery_status in {"sending", "unknown"}:
-        return None
+        return PlanRevisionResult(plan=None)
 
     high_risk = detect_high_risk_profile(user.profile_dict())
     if high_risk:
@@ -352,7 +368,24 @@ async def revise_today_plan(
             user_id=user.id,
             reason=high_risk,
         )
-        return None
+        return PlanRevisionResult(plan=None)  # caller sends its own fallback reply
+
+    # FIX: if this instruction closely matches one already applied to this same
+    # plan a short while ago, don't regenerate. revise_today_plan calls an LLM
+    # each time, so re-running it for what is really the same underlying
+    # request just produces a different, equally-valid-looking plan -- which
+    # reads to the user as the bot losing track of what it already did. Reuse
+    # the current plan instead and let the caller say so explicitly.
+    now = datetime.now(timezone.utc)
+    if is_duplicate_modification(
+        plan.last_modification_instruction, plan.last_modified_at, modification_instruction, now
+    ):
+        logger.info(
+            "today_plan_revision_duplicate_skipped",
+            user_id=user.id,
+            day_number=plan.day_number,
+        )
+        return PlanRevisionResult(plan=plan, is_duplicate=True)
 
     recent = await _recent_meals(db, user.id)
 
@@ -362,6 +395,11 @@ async def revise_today_plan(
         summary=user.conversation_summary,
         day_number=plan.day_number,
         modification_instruction=modification_instruction,
+        # FIX: the model previously had no idea what today's plan actually
+        # contained when "revising" it, so it just generated a fresh one from
+        # scratch every time. Passing the existing rendered content lets the
+        # revision prompt preserve everything except the requested edit.
+        current_plan_text=plan.content,
     )
 
     # Preserve the same DietPlan row and day_number. Only today's content and
@@ -372,6 +410,8 @@ async def revise_today_plan(
     plan.send_attempts = 0
     plan.last_send_error = None
     plan.provider_message_id = None
+    plan.last_modification_instruction = modification_instruction
+    plan.last_modified_at = now
 
     await db.commit()
     await db.refresh(plan)
@@ -382,7 +422,7 @@ async def revise_today_plan(
         day_number=plan.day_number,
     )
 
-    return plan
+    return PlanRevisionResult(plan=plan)
 
 
 async def generate_and_send_daily_plans() -> None:

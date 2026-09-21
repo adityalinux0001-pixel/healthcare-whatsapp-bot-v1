@@ -71,10 +71,12 @@ async def process_payment_success(ctx, phone_number: str, amount_inr: float, pay
         if created and not user.onboarding_complete:
             # Backward-compatible handling for any payment that was initiated before
             # onboarding was completed: keep the existing onboarding continuation.
+            from app.services.onboarding_extract import ONBOARDING_ORDER, QUESTIONS
+
             await send_text_message(
                 phone_number,
                 "✅ Payment received! Your plan is now active.\n\n"
-                "Let's get started — first, please tell me your name 😊",
+                f"{QUESTIONS[ONBOARDING_ORDER[0]]}",
             )
         elif user.onboarding_complete:
             # First-time paid users need their first plan immediately. Existing users
@@ -106,8 +108,20 @@ async def process_payment_success(ctx, phone_number: str, amount_inr: float, pay
 
 async def generate_diet_plan_for_user(ctx, user_id: int, prefer_text: bool = False) -> None:
     from app.services.diet_plan_service import generate_plan_for_user
+    from app.llm.gemini_client import PlanGenerationValidationError
+
     try:
         await generate_plan_for_user(user_id, prefer_text=prefer_text)
+    except PlanGenerationValidationError as exc:
+        # Re-raise so ARQ's configured max_tries can retry generation, but emit the
+        # actual deterministic safety violations instead of mislabelling them as a
+        # knowledge-base failure.
+        logger.error(
+            "generate_diet_plan_validation_failed",
+            user_id=user_id,
+            problems=exc.problems[:20],
+        )
+        raise
     except Exception:
         logger.exception("generate_diet_plan_failed", user_id=user_id)
         raise
