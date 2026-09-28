@@ -4,7 +4,6 @@ from pydantic import BaseModel, Field
 
 class DietPlanOutput(BaseModel):
     breakfast: str = Field(description="Indian breakfast with practical portion guidance.")
-    mid_morning_snack: str = Field(description="Optional/simple mid-morning snack; say 'Skip' if not needed.")
     lunch: str = Field(description="Indian lunch with practical portion guidance.")
     evening_snack: str = Field(description="Simple evening snack.")
     dinner: str = Field(description="Indian dinner with practical portion guidance.")

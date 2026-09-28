@@ -314,7 +314,6 @@ def _render_plan(plan: DietPlanOutput, day_number: int) -> str:
     return (
         f"🌿 *Day {day_number} — Today's Diet Plan*\n\n"
         f"🍳 *Breakfast:* {plan.breakfast}\n\n"
-        f"🍎 *Mid-morning:* {plan.mid_morning_snack}\n\n"
         f"🍛 *Lunch:* {plan.lunch}\n\n"
         f"☕ *Evening snack:* {plan.evening_snack}\n\n"
         f"🥗 *Dinner:* {plan.dinner}\n\n"

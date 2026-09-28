@@ -7,7 +7,6 @@ from app.llm.schemas import DietPlanOutput
 
 _MEAL_FIELDS = (
     "breakfast",
-    "mid_morning_snack",
     "lunch",
     "evening_snack",
     "dinner",

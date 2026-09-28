@@ -5,7 +5,6 @@ from app.services.plan_validation import validate_plan
 def _plan(**overrides):
     data = {
         "breakfast": "Poha with vegetables",
-        "mid_morning_snack": "Fruit",
         "lunch": "Roti, dal and sabzi",
         "evening_snack": "Roasted chana",
         "dinner": "Khichdi and vegetables",
@@ -36,7 +35,7 @@ def test_allergy_is_rejected():
     from app.llm.schemas import DietPlanOutput
     from app.services.plan_validation import validate_plan
     plan = DietPlanOutput(
-        breakfast="Peanut poha", mid_morning_snack="Banana", lunch="Dal roti",
+        breakfast="Peanut poha", lunch="Dal roti",
         evening_snack="Fruit", dinner="Vegetable khichdi", exercise="20 min walk",
         hydration_and_routine="Water through the day", safety_note="Stop if unwell."
     )

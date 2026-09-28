@@ -490,8 +490,8 @@ async def _handle_general_qa(
                 # A lightweight exact-section extractor is used only for known headings.
                 section_map = {
                     "breakfast": "*Breakfast:*",
-                    "mid_morning_snack": "*Mid-morning:*",
-                    "mid morning snack": "*Mid-morning:*",
+                    "mid_morning_snack": "*Breakfast:*",
+                    "mid morning snack": "*Breakfast:*",
                     "lunch": "*Lunch:*",
                     "evening_snack": "*Evening snack:*",
                     "evening snack": "*Evening snack:*",

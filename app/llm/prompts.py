@@ -130,7 +130,7 @@ VERIFIED KNOWLEDGE BASE:
 
 Plan rules:
 
-Produce breakfast, mid-morning snack, lunch, evening snack, dinner, and a short practical exercise plan.
+Produce breakfast, lunch, evening snack, dinner, and a short practical exercise plan.
 Keep foods realistic for an Indian household and the user's diet preference.
 Respect allergies and food_dislikes STRICTLY. Never include an allergen or disliked food as a meal ingredient.
 Respect medical-condition safety: do not make therapeutic/curative claims or prescribe medication.
