@@ -245,12 +245,11 @@ async def _handle_onboarding(
             )
         _apply_extracted_fields(user, extracted)
 
-    # Personalized plans are adult-only. Keep the conversation open so the user
-    # can correct an accidentally extracted age later, but never enqueue a plan
-    # for a minor.
-    if user.age is not None and user.age < 18:
+    # Keep personalized plans within the supported age range (12-75 years).
+    # Do not enqueue a personalized plan outside this range.
+    if user.age is not None and not 12 <= user.age <= 75:
         reply = (
-            "This personalized diet and exercise service is available for adults aged 18 and over. "
+            "This personalized diet and exercise service is available for users aged 12 to 75. "
             "If your age was extracted incorrectly, please provide your correct age."
         )
         db.add(Message(user_id=user.id, role="assistant", content=reply))

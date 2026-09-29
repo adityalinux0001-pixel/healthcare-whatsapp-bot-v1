@@ -3,7 +3,13 @@ from pydantic import BaseModel, Field
 
 
 class DietPlanOutput(BaseModel):
-    breakfast: str = Field(description="Indian breakfast with practical portion guidance.")
+    breakfast: str = Field(
+        description=(
+            "Light, simple Indian breakfast item (e.g. a fruit, roasted chana, sprouts, "
+            "soaked nuts, buttermilk) with practical portion guidance. This is a small "
+            "bite, not a large cooked meal like paratha, cheela, or poha."
+        )
+    )
     lunch: str = Field(description="Indian lunch with practical portion guidance.")
     evening_snack: str = Field(description="Simple evening snack.")
     dinner: str = Field(description="Indian dinner with practical portion guidance.")
