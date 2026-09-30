@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from arq import cron
+from arq.worker import Retry
 from arq.connections import RedisSettings
 from zoneinfo import ZoneInfo
 
@@ -109,21 +110,33 @@ async def process_payment_success(ctx, phone_number: str, amount_inr: float, pay
 async def generate_diet_plan_for_user(ctx, user_id: int, prefer_text: bool = False) -> None:
     from app.services.diet_plan_service import generate_plan_for_user
     from app.llm.gemini_client import PlanGenerationValidationError
+    from app.knowledge.store import KnowledgeBaseNotReady
+
+    job_try = ctx.get("job_try", 1)
+    max_tries = WorkerSettings.max_tries
 
     try:
         await generate_plan_for_user(user_id, prefer_text=prefer_text)
     except PlanGenerationValidationError as exc:
-        # Re-raise so ARQ's configured max_tries can retry generation, but emit the
-        # actual deterministic safety violations instead of mislabelling them as a
-        # knowledge-base failure.
         logger.error(
             "generate_diet_plan_validation_failed",
             user_id=user_id,
+            job_try=job_try,
             problems=exc.problems[:20],
         )
+        if job_try < max_tries:
+            raise Retry(defer=60 * job_try)
         raise
-    except Exception:
-        logger.exception("generate_diet_plan_failed", user_id=user_id)
+    except Exception as exc:
+        logger.exception(
+            "generate_diet_plan_failed",
+            user_id=user_id,
+            job_try=job_try,
+            error_type=type(exc).__name__,
+        )
+        # ARQ only retries when Retry is raised; a plain exception fails the job for good.
+        if job_try < max_tries:
+            raise Retry(defer=30 * job_try)
         raise
 
 

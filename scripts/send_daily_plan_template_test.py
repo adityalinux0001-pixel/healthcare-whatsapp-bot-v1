@@ -1,11 +1,4 @@
-"""Send today's already-saved diet plan through the approved WhatsApp template.
 
-This is a test-only utility. It does not change DietPlan delivery_status or any
-production scheduling state.
-
-Usage:
-    python scripts/send_daily_plan_template_test.py --user-id 2
-"""
 from __future__ import annotations
 
 import argparse

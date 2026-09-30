@@ -1,6 +1,6 @@
-
 from __future__ import annotations
 
+import threading
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
@@ -9,6 +9,7 @@ import chromadb
 
 from app.config import settings
 from app.knowledge.embeddings import get_embedder
+from app.utils.logging_config import logger
 
 COLLECTION_NAME = "health_assistant_knowledge"
 SourceRole = Literal["authoritative", "supporting"]
@@ -18,15 +19,24 @@ class KnowledgeBaseNotReady(RuntimeError):
     pass
 
 
+# Serialises first-time Chroma initialisation across worker threads.
+_init_lock = threading.RLock()
+
+
 @lru_cache(maxsize=1)
-def get_client() -> chromadb.PersistentClient:
+def _get_client_cached() -> chromadb.PersistentClient:
     path = Path(settings.knowledge_chroma_dir)
     path.mkdir(parents=True, exist_ok=True)
     return chromadb.PersistentClient(path=str(path))
 
 
+def get_client() -> chromadb.PersistentClient:
+    with _init_lock:
+        return _get_client_cached()
+
+
 @lru_cache(maxsize=1)
-def get_collection():
+def _get_collection_cached():
     return get_client().get_or_create_collection(
         name=COLLECTION_NAME,
         metadata={
@@ -36,11 +46,22 @@ def get_collection():
     )
 
 
+def get_collection():
+    with _init_lock:
+        return _get_collection_cached()
+
+
 def kb_ready() -> bool:
     try:
-        return get_collection().count() > 0
+        count = get_collection().count()
     except Exception:
+        # Do NOT hide the real error: log it so we can see why the KB check failed.
+        logger.exception("kb_ready_check_failed", chroma_dir=settings.knowledge_chroma_dir)
         return False
+    if count <= 0:
+        logger.error("kb_collection_empty", chroma_dir=settings.knowledge_chroma_dir)
+        return False
+    return True
 
 
 def _query_once(
