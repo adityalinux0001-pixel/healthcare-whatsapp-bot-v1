@@ -14,14 +14,16 @@ from app.utils.security import mask_identifier
 IST = ZoneInfo("Asia/Kolkata")
 
 
-async def process_incoming_message(ctx, phone: str, text: str, wa_message_id: str) -> None:
+async def process_incoming_message(
+    ctx, phone: str, text: str, wa_message_id: str, button_id: str | None = None
+) -> None:
     from app.services.conversation_service import handle_incoming_message
     from app.whatsapp.client import show_typing_indicator
 
     await show_typing_indicator(wa_message_id)
     async with AsyncSessionLocal() as db:
         try:
-            await handle_incoming_message(db, phone, text, wa_message_id)
+            await handle_incoming_message(db, phone, text, wa_message_id, button_id=button_id)
         except Exception:
             logger.exception("process_incoming_message_failed", phone=mask_identifier(phone))
             raise

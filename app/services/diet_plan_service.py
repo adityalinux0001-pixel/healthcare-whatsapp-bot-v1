@@ -15,7 +15,7 @@ from app.database import AsyncSessionLocal
 from app.models import User, DietPlan, Message
 from app.llm.gemini_client import generate_diet_plan
 from app.services.plan_revision_policy import is_duplicate_modification
-from app.whatsapp.client import send_text_message, send_template_message
+from app.whatsapp.client import send_text_message, send_reply_buttons
 from app.utils.logging_config import logger
 
 
@@ -42,33 +42,173 @@ def _canonical_day_from_local_date(local_date) -> datetime:
     return datetime.combine(local_date, time.min, tzinfo=IST).astimezone(timezone.utc)
 
 
-def _template_plan_content(content: str, max_chars: int = 880) -> str:
-    """Create a compact single-line version for WhatsApp template delivery.
+# --------------------------------------------------------------------------
+# Daily check-in + 24h free-form window (no paid WhatsApp templates anywhere)
+# --------------------------------------------------------------------------
+# WhatsApp allows free-form (non-template) messages for 24h after the user's
+# last inbound message. The daily check-in buttons make the user message us
+# every day, which keeps that window open for the next morning's plan.
+SERVICE_WINDOW_SECONDS = 24 * 60 * 60
+PLAN_SEND_HOUR_IST = 6  # same hour as the daily cron in app/worker.py
 
-    The complete generated plan remains unchanged in DietPlan.content.
-    This helper only formats the version sent through the approved
-    WhatsApp template.
+CHECKIN_PENDING = "pending"
+CHECKIN_BUTTON_PREFIX = "chk"
+# button/choice code -> value stored in DietPlan.checkin_status
+CHECKIN_CHOICES = {"done": "done", "not_done": "not_done", "skip": "skipped"}
+CHECKIN_ANSWERED = frozenset(CHECKIN_CHOICES.values())
+CHECKIN_BUTTON_TITLES = {"done": "✅ Done", "not_done": "❌ Not done", "skip": "⏭️ Skip"}
+
+# Conservative exact-match text fallbacks, so a user who types instead of tapping
+# is not stuck behind the mandatory check-in.
+_CHECKIN_TEXT_ANSWERS = {
+    "done": "done", "done!": "done", "ho gaya": "done", "hogaya": "done", "ho gya": "done",
+    "hogya": "done", "done ho gaya": "done", "completed": "done",
+    "not done": "not_done", "nahi hua": "not_done", "nhi hua": "not_done",
+    "nahi kiya": "not_done", "nhi kiya": "not_done", "not done yet": "not_done",
+    "skip": "skip", "skipped": "skip", "skip it": "skip", "skip kar do": "skip",
+}
+
+
+def checkin_button_id(plan_id: int, choice: str) -> str:
+    return f"{CHECKIN_BUTTON_PREFIX}:{plan_id}:{choice}"
+
+
+def parse_checkin_button_id(button_id: str | None) -> tuple[int, str] | None:
+    """'chk:<plan_id>:<choice>' -> (plan_id, choice); anything else -> None."""
+    parts = (button_id or "").split(":")
+    if len(parts) != 3 or parts[0] != CHECKIN_BUTTON_PREFIX:
+        return None
+    if not parts[1].isdigit() or parts[2] not in CHECKIN_CHOICES:
+        return None
+    return int(parts[1]), parts[2]
+
+
+def parse_checkin_text(text: str) -> str | None:
+    normalized = " ".join(text.casefold().replace("✅", " ").replace("❌", " ").replace("⏭️", " ").split())
+    return _CHECKIN_TEXT_ANSWERS.get(normalized)
+
+
+def _service_window_open(last_inbound_at: datetime | None) -> bool:
+    return bool(
+        last_inbound_at
+        and (datetime.now(timezone.utc) - last_inbound_at.astimezone(timezone.utc)).total_seconds()
+        < SERVICE_WINDOW_SECONDS
+    )
+
+
+async def _latest_plan(db, user_id: int) -> DietPlan | None:
+    return await db.scalar(
+        select(DietPlan)
+        .where(DietPlan.user_id == user_id)
+        .order_by(DietPlan.day_number.desc())
+        .limit(1)
+    )
+
+
+async def get_pending_checkin_plan(db, user_id: int) -> DietPlan | None:
+    """Latest plan if it was delivered and the user has not answered its check-in."""
+    plan = await _latest_plan(db, user_id)
+    if plan and plan.delivery_status == "sent" and plan.checkin_status == CHECKIN_PENDING:
+        return plan
+    return None
+
+
+async def get_unanswered_prior_day_checkin(db, user_id: int) -> DietPlan | None:
+    """Pending check-in from a previous day (today's is still open and not nagged)."""
+    plan = await get_pending_checkin_plan(db, user_id)
+    if plan and plan.plan_date < _plan_day_utc():
+        return plan
+    return None
+
+
+async def needs_plan_resume(db, user: User) -> bool:
+    """True when a generate/deliver job would do real work for this user right now.
+
+    Used when the user messages us (or answers a check-in) to continue the daily
+    flow exactly where it stopped, without waiting for the next 06:00 cron.
     """
-    first_line, separator, remainder = content.partition("\n")
+    from app.knowledge.safety import detect_high_risk_profile
 
-    if first_line.strip().replace("*", "").startswith("🌿 Day ") and separator:
-        content = remainder.lstrip("\n")
+    if not user.onboarding_complete or (user.age is not None and user.age < 18):
+        return False
+    # High-risk profiles never get automated plans (the job would just resend the
+    # warning message), so never trigger it from ordinary chat.
+    if detect_high_risk_profile(user.profile_dict()):
+        return False
 
-    # The general-wellness disclaimer is intentionally omitted from the
-    # compact template version. The full saved plan still contains it.
-    disclaimer_marker = "⚠️ This plan is for general wellness."
-    if disclaimer_marker in content:
-        content = content.split(disclaimer_marker, 1)[0].rstrip()
+    latest = await _latest_plan(db, user.id)
+    if latest and latest.delivery_status == "awaiting_window":
+        return True  # a generated plan is waiting to be delivered
 
-    # WhatsApp template parameters cannot contain newlines or tabs.
-    content = " ".join(content.split())
+    today_plan = await db.scalar(
+        select(DietPlan.id).where(DietPlan.user_id == user.id, DietPlan.plan_date == _plan_day_utc())
+    )
+    if today_plan is not None:
+        return False
+    if latest and latest.delivery_status == "sent" and latest.checkin_status == CHECKIN_PENDING:
+        return False  # blocked until the user answers the check-in
+    # Before 06:00 IST the normal cron will create today's plan.
+    return datetime.now(IST).hour >= PLAN_SEND_HOUR_IST
 
-    # Keep the dynamic parameter comfortably below Meta's 1024-character
-    # total template-body limit, leaving room for the template's own text.
-    if len(content) > max_chars:
-        content = content[: max_chars - 3].rsplit(" ", 1)[0].rstrip() + "..."
 
-    return content
+async def send_checkin_prompt(phone: str, plan_id: int, day_number: int, *, reminder: bool = False) -> None:
+    """Send the Done / Not done / Skip buttons for a plan."""
+    if reminder:
+        body = (
+            f"👋 Quick check-in first!\n\n"
+            f"Did you follow your *Day {day_number}* diet & exercise plan?\n\n"
+            "Tap one option below — I'll send your next plan right after 👇"
+        )
+    else:
+        body = (
+            f"✅ *Day {day_number} check-in*\n\n"
+            "Did you follow today's diet & exercise plan?\n\n"
+            "Tap one option below — your next plan is sent after you reply 👇"
+        )
+    await send_reply_buttons(
+        phone,
+        body,
+        [(checkin_button_id(plan_id, choice), CHECKIN_BUTTON_TITLES[choice]) for choice in CHECKIN_CHOICES],
+    )
+
+
+async def _start_checkin(user: User, plan_id: int, day_number: int) -> None:
+    """Mark the delivered plan's check-in as pending and send the buttons.
+
+    Never raises: the plan itself is already delivered. If the buttons fail to
+    send, the user gets them again (reminder) the next time they message us.
+    """
+    try:
+        async with AsyncSessionLocal() as db:
+            plan = await db.get(DietPlan, plan_id)
+            if not plan or plan.checkin_status in CHECKIN_ANSWERED:
+                return  # e.g. a revised plan whose check-in was already answered
+            if plan.checkin_status != CHECKIN_PENDING:
+                plan.checkin_status = CHECKIN_PENDING
+                plan.checkin_sent_at = datetime.now(timezone.utc)
+                await db.commit()
+        await send_checkin_prompt(user.phone_number, plan_id, day_number)
+    except Exception:
+        logger.exception("diet_plan_checkin_prompt_failed", user_id=user.id, plan_id=plan_id)
+
+
+async def record_checkin(db, user: User, plan_id: int, choice: str) -> tuple[str, DietPlan | None]:
+    """Store the user's answer. Returns ('recorded'|'already'|'not_found', plan)."""
+    plan = await db.scalar(
+        select(DietPlan)
+        .where(DietPlan.id == plan_id, DietPlan.user_id == user.id)
+        .with_for_update()
+    )
+    if not plan:
+        await db.commit()
+        return "not_found", None
+    if plan.checkin_status in CHECKIN_ANSWERED:
+        await db.commit()
+        return "already", plan
+    plan.checkin_status = CHECKIN_CHOICES[choice]
+    plan.checkin_responded_at = datetime.now(timezone.utc)
+    await db.commit()
+    return "recorded", plan
 
 
 async def _recent_meals(db, user_id: int) -> list[str]:
@@ -166,54 +306,20 @@ async def _send_plan(user: User, plan: DietPlan, *, prefer_text: bool = False) -
         last_inbound_at = await _last_inbound_at(db, user.id)
 
     # Free-form WhatsApp text is valid only inside the 24-hour customer-service
-    # window. When it is closed (such as a proactive 06:00 IST daily send), use
-    # the user's approved utility template instead.
-    within_service_window = bool(
-        last_inbound_at
-        and (datetime.now(timezone.utc) - last_inbound_at.astimezone(timezone.utc)).total_seconds()
-        < 24 * 60 * 60
-    )
-    use_text = within_service_window
-    template_name = settings.whatsapp_daily_plan_template_name.strip()
-
-    if not use_text and not template_name:
-        error = (
-            "WhatsApp 24-hour service window is closed and "
-            "WHATSAPP_DAILY_PLAN_TEMPLATE_NAME is not configured."
+    # window. We never use (chargeable) templates: if the window is closed the
+    # generated plan is parked as "awaiting_window" and delivered automatically
+    # the next time the user messages us (see needs_plan_resume / worker job).
+    if not _service_window_open(last_inbound_at):
+        await _mark_delivery(
+            plan_id,
+            "awaiting_window",
+            error="WhatsApp 24h window closed; will deliver when the user next messages.",
         )
-        await _mark_delivery(plan_id, "failed", error=error)
-        logger.error(
-            "diet_plan_delivery_blocked_template_missing",
-            user_id=user.id,
-            day_number=day_number,
-        )
+        logger.warning("diet_plan_delivery_deferred_window_closed", user_id=user.id, day_number=day_number)
         return
 
     try:
-        if use_text:
-            response = await send_text_message(user.phone_number, content)
-        else:
-            # Template created in Meta: `daily_diet_plan`
-            # {{1}} = day number, {{2}} = compact rendered plan body.
-            #
-            # The stored DietPlan.content remains the complete generated plan.
-            # Only the template-delivered version is compacted because Meta
-            # rejects template parameters containing newlines/tabs and the
-            # complete plan can exceed the template's 1024-character limit.
-            template_content = _template_plan_content(content)
-
-            response = await send_template_message(
-                user.phone_number,
-                template_name,
-                settings.whatsapp_daily_plan_template_language_code,
-                components=[{
-                    "type": "body",
-                    "parameters": [
-                        {"type": "text", "text": str(day_number)},
-                        {"type": "text", "text": template_content},
-                    ],
-                }],
-            )
+        response = await send_text_message(user.phone_number, content)
     except RetryError as exc:
         root = exc.last_attempt.exception()
 
@@ -269,6 +375,8 @@ async def _send_plan(user: User, plan: DietPlan, *, prefer_text: bool = False) -
         pass
 
     await _mark_delivery(plan_id, "sent", provider_message_id=provider_message_id)
+    # Ask whether the user followed this plan (also keeps the 24h window open).
+    await _start_checkin(user, plan_id, day_number)
 
 
 async def generate_plan_for_user(user_id: int, *, prefer_text: bool = False) -> None:
@@ -288,6 +396,28 @@ async def generate_plan_for_user(user_id: int, *, prefer_text: bool = False) -> 
         sub = await get_active_subscription(db, user)
         if not sub:
             return
+
+        # Starting a NEW day: the previous plan's check-in must be answered first,
+        # and (since no templates are used) the 24h free-form window must be open.
+        today_plan_id = await db.scalar(
+            select(DietPlan.id).where(DietPlan.user_id == user.id, DietPlan.plan_date == _plan_day_utc())
+        )
+        if today_plan_id is None:
+            latest = await _latest_plan(db, user.id)
+            if latest and latest.delivery_status == "sent" and latest.checkin_status == CHECKIN_PENDING:
+                logger.info(
+                    "daily_plan_skipped_checkin_pending",
+                    user_id=user_id,
+                    pending_day_number=latest.day_number,
+                )
+                return
+            if not _service_window_open(await _last_inbound_at(db, user.id)):
+                logger.info("daily_plan_deferred_window_closed", user_id=user_id)
+                return
+            if latest and latest.delivery_status == "awaiting_window" and latest.content:
+                # An earlier generated plan never reached the user -> deliver that one first.
+                await _send_plan(user, latest, prefer_text=prefer_text)
+                return
 
         plan, created = await _claim_today_plan(db, user, sub.id)
 
@@ -429,11 +559,23 @@ async def generate_and_send_daily_plans() -> None:
     from app.redis_client import get_arq_pool
 
     async with AsyncSessionLocal() as db:
+        # Users whose 24h window closes soonest (oldest last inbound message) go
+        # first, so a user who tapped the check-in seconds after yesterday's plan
+        # is served before their free-form window runs out.
+        last_inbound = (
+            select(Message.user_id.label("uid"), func.max(Message.created_at).label("last_in"))
+            .where(Message.role == "user")
+            .group_by(Message.user_id)
+            .subquery()
+        )
         result = await db.execute(
-            select(User.id).where(
+            select(User.id)
+            .outerjoin(last_inbound, last_inbound.c.uid == User.id)
+            .where(
                 User.onboarding_complete.is_(True),
                 User.age >= 18,
             )
+            .order_by(last_inbound.c.last_in.asc().nullsfirst())
         )
         user_ids = [row[0] for row in result.all()]
 

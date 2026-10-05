@@ -53,15 +53,28 @@ async def receive_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                 if exists:
                     continue
 
-                text = (msg.get("text") or {}).get("body", "").strip()
+                # Tapped quick-reply button (daily check-in) -> carries a button id.
+                # Everything else keeps the exact previous behaviour (plain text only).
+                button_id = None
+                interactive = msg.get("interactive") or {}
+                if msg.get("type") == "interactive" and interactive.get("type") == "button_reply":
+                    reply = interactive.get("button_reply") or {}
+                    button_id = (reply.get("id") or "").strip() or None
+                    text = (reply.get("title") or "").strip()
+                else:
+                    text = (msg.get("text") or {}).get("body", "").strip()
+
                 if not text:
                     db.add(ProcessedWebhookEvent(source="whatsapp", event_id=wa_message_id))
                     await db.commit()
                     continue
 
                 # Queue before marking processed. If Redis is unavailable, Meta can retry.
+                job_args = [from_number, text, wa_message_id]
+                if button_id:
+                    job_args.append(button_id)
                 await pool.enqueue_job(
-                    "process_incoming_message", from_number, text, wa_message_id,
+                    "process_incoming_message", *job_args,
                     _job_id=f"whatsapp:{wa_message_id}",
                 )
                 db.add(ProcessedWebhookEvent(source="whatsapp", event_id=wa_message_id))

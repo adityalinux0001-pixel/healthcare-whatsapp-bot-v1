@@ -25,6 +25,7 @@ from app.services.onboarding_extract import (
 
 HISTORY_LIMIT = 8        # messages sent to Gemini each turn
 SUMMARY_EVERY_N = 20     # update long-term summary every N user messages
+CHECKIN_NUDGE_COOLDOWN_SECONDS = 3 * 60 * 60  # re-ask a pending check-in at most this often
 
 
 async def _get_or_create_user(db: AsyncSession, phone: str) -> User:
@@ -59,7 +60,8 @@ async def _user_message_count(db: AsyncSession, user: User) -> int:
 
 
 async def handle_incoming_message(
-    db: AsyncSession, phone: str, text: str, wa_message_id: str
+    db: AsyncSession, phone: str, text: str, wa_message_id: str,
+    button_id: str | None = None,
 ) -> None:
     # FIX: Per-user distributed lock — prevents two workers processing messages
     # from the same user simultaneously (race on profile fields).
@@ -150,15 +152,26 @@ async def handle_incoming_message(
         ))
         await db.commit()
 
+        # Tapped a quick-reply button (daily check-in). Handled deterministically:
+        # never routed through onboarding or the LLM. The inbound message above is
+        # already persisted, which is what keeps the 24h free-form window open.
+        if button_id:
+            await _handle_button_reply(db, user, phone, button_id)
+            return
+
         history = await _recent_history(db, user, exclude_whatsapp_message_id=wa_message_id)
         summary = user.conversation_summary
 
         if not user.onboarding_complete:
             await _handle_onboarding(db, user, phone, text, history, summary)
         else:
-            handled_ack = await _send_simple_acknowledgement(db, user, phone, text)
-            if not handled_ack:
-                await _handle_general_qa(db, user, phone, text, history, summary)
+            handled_checkin = await _try_text_checkin_answer(db, user, phone, text)
+            if not handled_checkin:
+                handled_ack = await _send_simple_acknowledgement(db, user, phone, text)
+                if not handled_ack:
+                    await _handle_general_qa(db, user, phone, text, history, summary)
+                # Continue the daily-plan flow exactly where the user left off.
+                await _continue_plan_flow(db, user, phone)
 
         # FIX: Update long-term summary every N messages (background, non-blocking)
         msg_count = await _user_message_count(db, user)
@@ -177,6 +190,110 @@ async def handle_incoming_message(
         )
         await redis_client.eval(release_script, 1, lock_key, lock_token)
 
+
+
+_CHECKIN_ACK = {
+    "done": "Awesome, great job! 💪 Day {n} marked as done.",
+    "not_done": "No worries — every day is a fresh start! 🌿 Day {n} marked as not done.",
+    "skip": "Okay, Day {n} skipped. ⏭️",
+}
+
+
+async def _enqueue_plan_resume(user: User) -> None:
+    from app.redis_client import get_arq_pool
+
+    pool = await get_arq_pool()
+    # One resume job per user per day is enough; generate_plan_for_user is idempotent.
+    await pool.enqueue_job(
+        "generate_diet_plan_for_user", user.id, True,
+        _job_id=f"resume_plan:{user.id}:{datetime.now(ZoneInfo('Asia/Kolkata')).date().isoformat()}",
+    )
+
+
+async def _continue_plan_flow(db: AsyncSession, user: User, phone: str) -> None:
+    """After a normal chat turn: pick the daily plan flow up where it stopped.
+
+    1. A previous day's check-in is still unanswered -> ask again (rate-limited).
+    2. Otherwise, if a plan is waiting (24h window had closed) or today's plan was
+       held back, deliver/generate it now. Never breaks the main chat flow.
+    """
+    try:
+        from app.services import diet_plan_service as dps
+
+        pending = await dps.get_unanswered_prior_day_checkin(db, user.id)
+        if pending:
+            nudge_key = f"checkin_nudge:{pending.id}"
+            if await redis_client.set(nudge_key, "1", nx=True, ex=CHECKIN_NUDGE_COOLDOWN_SECONDS):
+                await dps.send_checkin_prompt(phone, pending.id, pending.day_number, reminder=True)
+            return
+
+        if await dps.needs_plan_resume(db, user):
+            await _enqueue_plan_resume(user)
+    except Exception:
+        logger.exception("plan_flow_continue_failed", user_id=user.id, phone=mask_identifier(phone))
+
+
+async def _record_and_reply_checkin(
+    db: AsyncSession, user: User, phone: str, plan_id: int, choice: str
+) -> None:
+    from app.services import diet_plan_service as dps
+
+    result, plan = await dps.record_checkin(db, user, plan_id, choice)
+    if result == "not_found" or plan is None:
+        logger.info("checkin_plan_not_found", user_id=user.id, plan_id=plan_id)
+        return
+
+    if result == "already":
+        reply = "✅ Already noted — thank you!"
+        resume = False
+    else:
+        resume = False
+        try:
+            resume = await dps.needs_plan_resume(db, user)
+        except Exception:
+            logger.exception("checkin_resume_check_failed", user_id=user.id)
+        tail = (
+            "Preparing your next plan now… 🌿"
+            if resume
+            else "Your next plan will arrive at 6:00 AM IST. 🌿"
+        )
+        reply = f"{_CHECKIN_ACK[choice].format(n=plan.day_number)}\n\n{tail}"
+
+    db.add(Message(user_id=user.id, role="assistant", content=reply))
+    await db.commit()
+    await send_text_message(phone, reply)
+
+    if resume:
+        try:
+            await _enqueue_plan_resume(user)
+        except Exception:
+            logger.exception("checkin_resume_enqueue_failed", user_id=user.id)
+    logger.info("checkin_recorded", user_id=user.id, plan_id=plan_id, choice=choice, result=result)
+
+
+async def _handle_button_reply(db: AsyncSession, user: User, phone: str, button_id: str) -> None:
+    from app.services.diet_plan_service import parse_checkin_button_id
+
+    parsed = parse_checkin_button_id(button_id)
+    if not parsed or not user.onboarding_complete:
+        logger.info("button_reply_ignored", user_id=user.id, button_id=button_id[:40])
+        return
+    plan_id, choice = parsed
+    await _record_and_reply_checkin(db, user, phone, plan_id, choice)
+
+
+async def _try_text_checkin_answer(db: AsyncSession, user: User, phone: str, text: str) -> bool:
+    """Accept a typed 'done' / 'not done' / 'skip' while a check-in is pending."""
+    from app.services.diet_plan_service import parse_checkin_text, get_pending_checkin_plan
+
+    choice = parse_checkin_text(text)
+    if not choice:
+        return False
+    plan = await get_pending_checkin_plan(db, user.id)
+    if not plan:
+        return False
+    await _record_and_reply_checkin(db, user, phone, plan.id, choice)
+    return True
 
 
 def _apply_extracted_fields(user: User, extracted: dict) -> None:

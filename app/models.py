@@ -177,6 +177,14 @@ class DietPlan(Base):
     # regenerating a different-but-equivalent one via a fresh LLM call each time.
     last_modification_instruction: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_modified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Daily check-in: did the user follow this plan?
+    #   NULL      -> legacy plan / no check-in was ever requested (never blocks anything)
+    #   pending   -> plan delivered + buttons sent, user has not answered yet.
+    #                While the LATEST plan is pending, the next day's plan is NOT generated.
+    #   done / not_done / skipped -> answered; next plan can be generated.
+    checkin_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    checkin_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    checkin_responded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         UniqueConstraint("user_id", "plan_date", name="uq_diet_plan_user_date"),

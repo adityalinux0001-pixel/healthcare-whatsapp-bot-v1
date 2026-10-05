@@ -63,26 +63,37 @@ async def send_text_message(to: str, body: str) -> dict:
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=8), retry=retry_if_exception(_retryable_whatsapp_error))
-async def send_template_message(
-    to: str, template_name: str, language_code: str = "en", components: list | None = None
-) -> dict:
-    """Pre-approved template — required outside the 24h session window."""
+async def send_reply_buttons(to: str, body: str, buttons: list[tuple[str, str]]) -> dict:
+    """Interactive quick-reply buttons (WhatsApp allows 1-3).
+
+    Free-form interactive messages are sent inside the 24h customer-service
+    window, so no Meta template is needed. ``buttons`` is a list of
+    ``(button_id, title)``; titles are capped at 20 chars by WhatsApp.
+    """
+    if not 1 <= len(buttons) <= 3:
+        raise ValueError("WhatsApp reply buttons: 1 to 3 buttons are allowed")
     payload = {
         "messaging_product": "whatsapp",
         "to": to,
-        "type": "template",
-        "template": {"name": template_name, "language": {"code": language_code}},
+        "type": "interactive",
+        "interactive": {
+            "type": "button",
+            "body": {"text": body[:1024]},
+            "action": {
+                "buttons": [
+                    {"type": "reply", "reply": {"id": button_id[:256], "title": title[:20]}}
+                    for button_id, title in buttons
+                ]
+            },
+        },
     }
-    if components:
-        payload["template"]["components"] = components
     resp = await _http_client.post(_BASE_URL, headers=_HEADERS, json=payload)
     if resp.is_error:
         logger.error(
-            "whatsapp_template_send_failed",
+            "whatsapp_buttons_send_failed",
             status=resp.status_code,
             response=resp.text[:2000],
             phone_number_id=settings.whatsapp_phone_number_id,
-            template_name=template_name,
             to=to[-4:],
         )
         resp.raise_for_status()
