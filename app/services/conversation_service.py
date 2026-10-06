@@ -155,6 +155,8 @@ async def handle_incoming_message(
         # Tapped a quick-reply button (daily check-in). Handled deterministically:
         # never routed through onboarding or the LLM. The inbound message above is
         # already persisted, which is what keeps the 24h free-form window open.
+        # _handle_button_reply enqueues the plan resume itself if needed, so we
+        # return immediately — _continue_plan_flow must NOT also enqueue it.
         if button_id:
             await _handle_button_reply(db, user, phone, button_id)
             return
@@ -166,12 +168,21 @@ async def handle_incoming_message(
             await _handle_onboarding(db, user, phone, text, history, summary)
         else:
             handled_checkin = await _try_text_checkin_answer(db, user, phone, text)
-            if not handled_checkin:
+            if handled_checkin:
+                # _record_and_reply_checkin already enqueues the plan resume.
+                # Do NOT also call _continue_plan_flow — that would enqueue a second job
+                # and cause the plan to be sent twice (the awaiting_window delivery race).
+                pass
+            else:
                 handled_ack = await _send_simple_acknowledgement(db, user, phone, text)
                 if not handled_ack:
-                    await _handle_general_qa(db, user, phone, text, history, summary)
-                # Continue the daily-plan flow exactly where the user left off.
-                await _continue_plan_flow(db, user, phone)
+                    plan_delivered_from_db = await _handle_general_qa(db, user, phone, text, history, summary)
+                else:
+                    plan_delivered_from_db = False
+                # Skip _continue_plan_flow when the plan was already delivered from DB
+                # in this turn — otherwise the same plan is sent a second time.
+                if not plan_delivered_from_db:
+                    await _continue_plan_flow(db, user, phone)
 
         # FIX: Update long-term summary every N messages (background, non-blocking)
         msg_count = await _user_message_count(db, user)
@@ -548,8 +559,13 @@ def _resolve_plan_request(route, history: list[dict]) -> tuple[int | None, date 
 async def _handle_general_qa(
     db: AsyncSession, user: User, phone: str, text: str,
     history: list[dict], summary: str | None,
-) -> None:
-    """Production conversation orchestrator: classify -> validate -> execute -> answer."""
+) -> bool:
+    """Production conversation orchestrator: classify -> validate -> execute -> answer.
+
+    Returns True when a saved plan was fetched from DB (saved_plan_retrieval path) so
+    the caller knows NOT to call _continue_plan_flow — that would deliver the same plan
+    a second time. Returns False in every other case.
+    """
     from app.llm.gemini_client import classify_conversation
 
     try:
@@ -634,7 +650,7 @@ async def _handle_general_qa(
         db.add(Message(user_id=user.id, role="assistant", content=reply))
         await db.commit()
         await send_text_message(phone, reply)
-        return
+        return True   # plan came from DB — caller must skip _continue_plan_flow
 
     # Persist only semantically explicit, high-confidence updates from the current turn.
     previous_dislikes = _food_dislike_items(user.food_dislikes)
@@ -726,4 +742,5 @@ async def _handle_general_qa(
     db.add(Message(user_id=user.id, role="assistant", content=reply))
     await db.commit()
     await send_text_message(phone, reply)
+    return False
 
