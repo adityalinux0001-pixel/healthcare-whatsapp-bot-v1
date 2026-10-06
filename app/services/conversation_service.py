@@ -27,6 +27,17 @@ HISTORY_LIMIT = 8        # messages sent to Gemini each turn
 SUMMARY_EVERY_N = 20     # update long-term summary every N user messages
 CHECKIN_NUDGE_COOLDOWN_SECONDS = 3 * 60 * 60  # re-ask a pending check-in at most this often
 
+# Production-safe per-user daily inbound-message limit.
+# The reset is based on India Standard Time (IST), which keeps the limit aligned
+# with the bot's primary operating timezone without changing the DB schema.
+DAILY_MESSAGE_LIMIT = 25
+DAILY_MESSAGE_TIMEZONE = ZoneInfo("Asia/Kolkata")
+DAILY_MESSAGE_LIMIT_MESSAGE = (
+    "Your daily message limit has been reached. "
+    "Your limit will reset tomorrow at 12:00 AM IST. "
+    "You can message again after the reset. 🙂"
+)
+
 
 async def _get_or_create_user(db: AsyncSession, phone: str) -> User:
     user = await db.scalar(select(User).where(User.phone_number == phone))
@@ -57,6 +68,25 @@ async def _user_message_count(db: AsyncSession, user: User) -> int:
         )
     )
     return result.scalar() or 0
+
+
+async def _today_user_message_count(db: AsyncSession, user: User) -> int:
+    """Count this user's stored inbound messages for the current IST day."""
+    from sqlalchemy import func
+
+    now_ist = datetime.now(DAILY_MESSAGE_TIMEZONE)
+    day_start_ist = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
+    day_end_ist = day_start_ist + timedelta(days=1)
+
+    result = await db.execute(
+        select(func.count()).select_from(Message).where(
+            Message.user_id == user.id,
+            Message.role == "user",
+            Message.created_at >= day_start_ist,
+            Message.created_at < day_end_ist,
+        )
+    )
+    return int(result.scalar() or 0)
 
 
 async def handle_incoming_message(
@@ -91,7 +121,28 @@ async def handle_incoming_message(
         # Safety must run before payment gating and before storing an unconsented
         # health message. The emergency response itself is intentionally generic.
         if detect_red_flag(text):
+            # Safety responses remain available even after the daily quota is reached.
             await send_text_message(phone, emergency_response())
+            return
+
+        # Daily quota: enforce before persistence/payment/LLM work so a user cannot
+        # consume more than 25 normal inbound messages in one IST calendar day.
+        # The existing per-user Redis lock makes the DB count check serial per user,
+        # so concurrent webhook jobs cannot both pass the 25-message boundary.
+        today_message_count = await _today_user_message_count(db, user)
+        if today_message_count >= DAILY_MESSAGE_LIMIT:
+            logger.info(
+                "daily_message_limit_reached",
+                user_id=user.id,
+                phone=mask_identifier(phone),
+                daily_message_count=today_message_count,
+                daily_message_limit=DAILY_MESSAGE_LIMIT,
+            )
+
+            # Every normal message after the daily limit is reached gets the same
+            # clear reminder. The message itself is not persisted, so it cannot
+            # increase the daily user-message count or affect normal conversation flow.
+            await send_text_message(phone, DAILY_MESSAGE_LIMIT_MESSAGE)
             return
 
         # Consent boundary: do not persist arbitrary inbound content until consent
