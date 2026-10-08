@@ -1,117 +1,170 @@
-
-
 from __future__ import annotations
 
 import re
 from typing import Any
 
+
 ONBOARDING_ORDER: list[str] = [
-    "age", "gender", "height_cm", "weight_kg",
-    "activity_level", "goal", "diet_preference",
-    "allergies", "medical_conditions",
+    "age", "city",
+    "hair_wash_frequency", "water_hardness",
+    "height_cm", "weight_kg",
+    "sugary_food_drink_frequency",
+    "sexually_active",
+    "family_hair_loss", "family_hair_loss_relation",
+    "dairy_intake",
 ]
 
 
 QUESTIONS: dict[str, str] = {
     "age": (
-        "Let's set up your profile — just a few quick questions 😊\n\n"
-        "What is your age?\n\n"
-        "*Reply like this:* 28"
+        "Let's get to know you with a few quick questions 😊\n\n"
+        "How old are you, and which city do you live in?\n\n"
+        "*Age:* 28\n"
+        "*City:* Indore"
     ),
-    "gender": (
-        "What is your gender?\n"
-        "1️⃣ Male\n"
-        "2️⃣ Female\n\n"
-        "*Reply like this:* 1  (or type \"male\")"
+    "city": (
+        "Which city do you currently live in?\n\n"
+        "*Reply like this:* Indore"
+    ),
+    "hair_wash_frequency": (
+        "How often do you wash your hair?\n\n"
+        "1️⃣ Daily\n"
+        "2️⃣ 2–3 times a week\n"
+        "3️⃣ Once a week\n"
+        "4️⃣ Less than once a week\n\n"
+        "*Reply with 1, 2, 3 or 4.*"
+    ),
+    "water_hardness": (
+        "What type of water do you usually use to wash your hair?\n\n"
+        "1️⃣ Soft water\n"
+        "2️⃣ Moderately hard water\n"
+        "3️⃣ Hard water\n"
+        "4️⃣ Very hard water\n"
+        "5️⃣ I'm not sure\n\n"
+        "*Reply with 1, 2, 3, 4 or 5.*"
     ),
     "height_cm": (
-        "What is your height?\n\n"
-        "*Reply like this:* 170  (cm)\n"
-        "*Or like this:* 5 ft 7  (feet & inches)"
+        "What is your current height and weight?\n\n"
+        "*Height:* 170 cm\n"
+        "*Weight:* 65 kg"
     ),
     "weight_kg": (
-        "And your current weight?\n\n"
-        "*Reply like this:* 65  (kg)\n"
-        "*Or like this:* 143 lbs  (pounds)"
+        "What is your current weight?\n\n"
+        "*Reply like this:* 65 kg  (or 143 lbs)"
     ),
-    "activity_level": (
-        "How active is your day-to-day?\n"
-        "1️⃣ Sedentary (little/no exercise)\n"
-        "2️⃣ Light (1-2 days/week)\n"
-        "3️⃣ Moderate (3-5 days/week)\n"
-        "4️⃣ Active (6-7 days/week)\n\n"
-        "*Reply like this:* 3  (or type \"moderate\")"
+    "sugary_food_drink_frequency": (
+        "How much sugary food or drinks do you usually have?\n\n"
+        "1️⃣ None or very little\n"
+        "2️⃣ Low\n"
+        "3️⃣ Moderate\n"
+        "4️⃣ High\n"
+        "5️⃣ Very high\n\n"
+        "*Reply with 1, 2, 3, 4 or 5.*\n"
+        "Examples: sweets, desserts, sugary tea/coffee, soft drinks, packaged juices."
     ),
-    "goal": (
-        "What is your main goal?\n"
-        "1️⃣ Lose weight\n"
-        "2️⃣ Gain weight\n"
-        "3️⃣ Maintain weight\n"
-        "4️⃣ Gain muscle\n\n"
-        "*Reply like this:* 1  (or type \"lose weight\")"
+    "sexually_active": (
+        "Are you currently sexually active?\n\n"
+        "1️⃣ Yes\n"
+        "2️⃣ No\n"
+        "3️⃣ Prefer not to say\n\n"
+        "*Reply with 1, 2 or 3.*"
     ),
-    "diet_preference": (
-        "What is your diet preference?\n"
-        "1️⃣ Vegetarian\n"
-        "2️⃣ Non-vegetarian\n"
-        "3️⃣ Eggetarian\n"
-        "4️⃣ Vegan\n\n"
-        "*Reply like this:* 2  (or type \"non-veg\")"
+    "family_hair_loss": (
+        "Does hair loss run in your family?\n\n"
+        "1️⃣ Yes\n"
+        "2️⃣ No\n"
+        "3️⃣ Not sure\n\n"
+        "*Reply with 1, 2 or 3.*"
     ),
-    "allergies": (
-        "Do you have any food allergies?\n\n"
-        "*Reply like this:* peanuts, dust\n"
-        "*Or if you don't have any:* no"
+    "family_hair_loss_relation": (
+        "Who in your family has had noticeable hair loss?\n\n"
+        "1️⃣ Father\n"
+        "2️⃣ Mother\n"
+        "3️⃣ Brother/Sister\n"
+        "4️⃣ Grandparent\n"
+        "5️⃣ Multiple family members\n"
+        "6️⃣ Other\n\n"
+        "*Reply with a number (you can also type the relation).*"
     ),
-    "medical_conditions": (
-        "Do you have any medical conditions?\n\n"
-        "*Reply like this:* diabetes, thyroid\n"
-        "*Or if you don't have any:* no"
+    "dairy_intake": (
+        "How much dairy do you usually have?\n\n"
+        "1️⃣ None\n"
+        "2️⃣ Low — occasionally\n"
+        "3️⃣ Moderate — once a day\n"
+        "4️⃣ High — 2–3 times a day\n"
+        "5️⃣ Very high — more than 3 times a day\n\n"
+        "*Reply with 1, 2, 3, 4 or 5.*\n"
+        "Examples: milk, curd/yogurt, paneer, cheese, butter, cream."
     ),
 }
 
 
 RETRY_HINTS: dict[str, str] = {
-    "age": "Hmm, I didn't catch that. Please send your age as just a number between 1 and 120.\n\n*Reply like this:* 28",
-    "gender": "Please reply with \"male\" or \"female\" (or 1 / 2).\n\n*Reply like this:* male",
-    "height_cm": "Please send your height in cm, or in feet/inches.\n\n*Reply like this:* 170  or  5 ft 7",
-    "weight_kg": "Please send your weight in kg, or in lbs.\n\n*Reply like this:* 65  or  143 lbs",
-    "activity_level": "Please reply with a number from 1-4, or a word like \"sedentary\" / \"active\".\n\n*Reply like this:* 3",
-    "goal": "Please reply with a number from 1-4, or a word like \"lose weight\" / \"gain muscle\".\n\n*Reply like this:* 1",
-    "diet_preference": "Please reply with a number from 1-4, or a word like \"veg\" / \"vegan\".\n\n*Reply like this:* 2",
-    "allergies": "Please tell me your allergies, or reply \"no\" if you don't have any.\n\n*Reply like this:* peanuts, dust  or  no",
-    "medical_conditions": "Please tell me your medical conditions, or reply \"no\" if you don't have any.\n\n*Reply like this:* diabetes  or  no",
+    "age": "Please send your age as a number. If you can, include your city too.\n\n*Example:* 28, Indore",
+    "city": "Please send the city you currently live in.\n\n*Example:* Indore",
+    "hair_wash_frequency": "Please reply with 1, 2, 3 or 4.\n\n*Example:* 2",
+    "water_hardness": "Please reply with 1, 2, 3, 4 or 5.\n\n*Example:* 3",
+    "height_cm": "Please send your height. You can use cm or feet/inches.\n\n*Example:* 170 cm or 5 ft 7 in",
+    "weight_kg": "Please send your weight in kg or lbs.\n\n*Example:* 65 kg or 143 lbs",
+    "sugary_food_drink_frequency": "Please reply with 1, 2, 3, 4 or 5.\n\n*Example:* 3",
+    "sexually_active": "Please reply with 1, 2 or 3.\n\n*Example:* 3",
+    "family_hair_loss": "Please reply with 1, 2 or 3.\n\n*Example:* 1",
+    "family_hair_loss_relation": "Please reply with a number or type the relation.\n\n*Example:* 1 (Father)",
+    "dairy_intake": "Please reply with 1, 2, 3, 4 or 5.\n\n*Example:* 2",
 }
 
-_ACTIVITY_ALIASES = {
-    "sedentary": "sedentary", "sedentry": "sedentary", "1": "sedentary",
-    "inactive": "sedentary", "not active": "sedentary", "no exercise": "sedentary",
-    "no workout": "sedentary", "sedentary lifestyle": "sedentary",
-    "light": "light", "2": "light", "lightly active": "light",
-    "moderate": "moderate", "3": "moderate", "moderately active": "moderate",
-    "active": "active", "4": "active", "very active": "active",
+
+_ENUM_ALIASES = {
+    "hair_wash_frequency": {
+        "1": "daily", "daily": "daily", "every day": "daily",
+        "2": "2_3_times_week", "2-3 times a week": "2_3_times_week",
+        "2–3 times a week": "2_3_times_week", "twice a week": "2_3_times_week",
+        "three times a week": "2_3_times_week", "2 times a week": "2_3_times_week",
+        "3": "once_week", "once a week": "once_week", "weekly": "once_week",
+        "4": "less_once_week", "less than once a week": "less_once_week",
+    },
+    "water_hardness": {
+        "1": "soft", "soft": "soft", "soft water": "soft",
+        "2": "moderately_hard", "moderately hard": "moderately_hard", "moderately hard water": "moderately_hard",
+        "3": "hard", "hard water": "hard",
+        "4": "very_hard", "very hard": "very_hard", "very hard water": "very_hard",
+        "5": "not_sure", "not sure": "not_sure", "unsure": "not_sure", "i don't know": "not_sure", "dont know": "not_sure",
+    },
+    "sugary_food_drink_frequency": {
+        "1": "none_or_very_little", "none": "none_or_very_little", "very little": "none_or_very_little", "none or very little": "none_or_very_little",
+        "2": "low", "low": "low",
+        "3": "moderate", "moderate": "moderate",
+        "4": "high", "high": "high",
+        "5": "very_high", "very high": "very_high",
+    },
+    "sexually_active": {
+        "1": "yes", "yes": "yes",
+        "2": "no", "no": "no",
+        "3": "prefer_not_to_say", "prefer not to say": "prefer_not_to_say", "prefer not": "prefer_not_to_say",
+    },
+    "family_hair_loss": {
+        "1": "yes", "yes": "yes",
+        "2": "no", "no": "no",
+        "3": "not_sure", "not sure": "not_sure", "unsure": "not_sure",
+    },
+    "family_hair_loss_relation": {
+        "1": "father", "father": "father",
+        "2": "mother", "mother": "mother",
+        "3": "sibling", "brother": "sibling", "sister": "sibling", "brother/sister": "sibling", "brother sister": "sibling",
+        "4": "grandparent", "grandparent": "grandparent", "grandfather": "grandparent", "grandmother": "grandparent",
+        "5": "multiple_family_members", "multiple family members": "multiple_family_members", "many family members": "multiple_family_members",
+        "6": "other", "other": "other",
+    },
+    "dairy_intake": {
+        "1": "none", "none": "none", "no dairy": "none",
+        "2": "low", "low": "low", "occasionally": "low",
+        "3": "moderate", "moderate": "moderate", "once a day": "moderate",
+        "4": "high", "high": "high", "2-3 times a day": "high", "2–3 times a day": "high",
+        "5": "very_high", "very high": "very_high", "more than 3 times a day": "very_high",
+    },
 }
-_GOAL_ALIASES = {
-    "lose weight": "weight_loss", "1": "weight_loss", "lose fat": "weight_loss",
-    "fat loss": "weight_loss", "weight loss": "weight_loss", "weight_loss": "weight_loss",
-    "gain weight": "weight_gain", "2": "weight_gain", "weight gain": "weight_gain",
-    "weight_gain": "weight_gain", "put on weight": "weight_gain",
-    "maintain": "maintain", "3": "maintain", "maintain weight": "maintain", "maintenance": "maintain",
-    "gain muscle": "muscle_gain", "4": "muscle_gain", "gain muscles": "muscle_gain",
-    "build muscle": "muscle_gain", "build muscles": "muscle_gain", "muscle gain": "muscle_gain",
-    "put on muscle": "muscle_gain", "muscle_gain": "muscle_gain",
-}
-_DIET_ALIASES = {
-    "veg": "veg", "1": "veg", "vegetarian": "veg", "vegeterian": "veg", "vegitarian": "veg",
-    "non veg": "non_veg", "2": "non_veg", "non-veg": "non_veg", "nonveg": "non_veg",
-    "non vegetarian": "non_veg", "non_vegetarian": "non_veg",
-    "eggetarian": "eggetarian", "3": "eggetarian", "eggitarian": "eggetarian",
-    "vegan": "vegan", "4": "vegan",
-}
-_GENDER_ALIASES = {
-    "male": "male", "m": "male", "man": "male", "boy": "male",
-    "female": "female", "f": "female", "woman": "female", "girl": "female",
-}
+
+_GIBBERISH_RE = re.compile(r"(?i)[bcdfghjklmnpqrstvwxyz]{6,}")
 
 
 def _norm(text: Any) -> str:
@@ -122,71 +175,60 @@ def _fold(text: str) -> str:
     return text.casefold()
 
 
-def looks_like_gibberish(token: str) -> bool:
-
-    return bool(re.search(r"(?i)[bcdfghjklmnpqrstvwxyz]{5,}", token))
-
-
-_HEALTH_NEGATIVE_WORDS = {
-    "no", "not", "none", "nothing", "na", "nope", "nah", "never", "zero",
-    "dont", "don't", "haven't", "havent",
-}
-_HEALTH_FILLER_WORDS = {
-    "i", "have", "any", "allergies", "allergy", "allergen", "allergens",
-    "medical", "condition", "conditions", "issue", "issues", "health",
-    "problem", "problems", "disease", "diseases", "and", "or", "that",
-    "know", "of", "to", "report", "there", "is", "are", "at", "all", "ve",
-}
-
-
-def is_clear_negative_health_reply(text: str) -> bool:
- 
-    tokens = re.findall(r"[a-z']+", _fold(text))
-    if not tokens:
-        return False
-    meaningful = [t for t in tokens if t not in _HEALTH_FILLER_WORDS]
-    if not meaningful:
-        return False
-    return all(t in _HEALTH_NEGATIVE_WORDS for t in meaningful)
-
-
 def _bare(text: str) -> str:
-    return _fold(text).strip(" .!?")
+    return _fold(text).strip(" .!?\n")
 
 
+def _looks_like_gibberish(text: str) -> bool:
+    return bool(_GIBBERISH_RE.search(text))
 
 
 def _parse_age(raw: str, is_target: bool) -> int | None:
     normalized = _fold(raw)
-    m = re.search(r"\bage\s*(?:is|:|-)?\s*(\d{1,3})\b", normalized)
-    if not m:
-        m = re.search(r"\b(?:male|female|man|woman)\s*,?\s*(\d{1,3})\s*(?:years?|yrs?|yo)?\b", normalized)
-    if not m:
-        m = re.search(r"\b(\d{1,3})\s*(?:years?|yrs?|yo)\b", normalized)
-    if not m and is_target:
-        m = re.fullmatch(r"(\d{1,3})", _bare(raw))
+    patterns = [
+        r"\bage\s*(?:is|:|-)?\s*(\d{1,3})\b",
+        r"\b(?:male|female|man|woman)\s*,?\s*(\d{1,3})\s*(?:years?|yrs?|yo)?\b",
+        r"\b(\d{1,3})\s*(?:years?|yrs?|yo)\b",
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, normalized)
+        if m:
+            age = int(m.group(1))
+            return age if 1 <= age <= 120 else None
+    # Common combined reply to the first onboarding question: "28, Indore".
+    m = re.match(r"^\s*(\d{1,3})\s*(?:,|;|-)\s*", normalized)
     if m:
         age = int(m.group(1))
-        if 1 <= age <= 120:
-            return age
+        return age if 1 <= age <= 120 else None
+    if is_target:
+        m = re.fullmatch(r"(\d{1,3})", _bare(raw))
+        if m:
+            age = int(m.group(1))
+            return age if 1 <= age <= 120 else None
     return None
 
 
-def _parse_gender(raw: str, is_target: bool) -> str | None:
-    normalized = _fold(raw)
-    m = re.search(r"\b(male|female|man|woman|boy|girl|m|f)\b", normalized)
-    if m:
-        return _GENDER_ALIASES.get(m.group(1))
-    # Bare numeric menu replies ("1"/"2") are only accepted while gender is
-    # the field actually being asked — same collision-safety rule used for
-    # activity_level/goal/diet_preference, which also reuse these digits for
-    # their own menus.
+def _parse_city(raw: str, is_target: bool) -> str | None:
+    normalized = _norm(raw)
+    lowered = normalized.casefold()
+    patterns = [
+        r"(?:city|live in|living in|based in|from)\s*(?:is|:|-)?\s*([A-Za-z][A-Za-z .\'-]{1,80})$",
+        r"^\d{1,3}\s*(?:years?|yrs?)?\s*[,;-]\s*([A-Za-z][A-Za-z .\'-]{1,80})$",
+        r"^\d{1,3}\s*[,/-]\s*([A-Za-z][A-Za-z .\'-]{1,80})$",
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, normalized, re.IGNORECASE)
+        if m:
+            value = m.group(1).strip(" .,-")
+            return value[:100] if value else None
     if is_target:
-        bare = _bare(raw)
-        if bare == "1":
-            return "male"
-        if bare == "2":
-            return "female"
+        value = normalized.strip(" .,-")
+        if not value or len(value) > 100 or re.search(r"\d", value) or _looks_like_gibberish(value):
+            return None
+        # Don't store a sentence as a city when the current question asks only for a city.
+        if len(value.split()) > 8:
+            return None
+        return value
     return None
 
 
@@ -196,7 +238,7 @@ def _parse_height_cm(raw: str, is_target: bool) -> float | None:
     if m:
         val = float(m.group(1))
         return round(val, 2) if 100 <= val <= 250 else None
-    m = re.search(r"\b(\d)\s*(?:'|ft|feet)\s*(\d{1,2})?\s*(?:\"|in|inches)?\b", normalized)
+    m = re.search(r"""\b(\d)\s*(?:['"]|ft|feet)\s*(\d{1,2})?\s*(?:"|in|inches)?\b""", normalized)
     if m:
         feet = int(m.group(1))
         inches = int(m.group(2)) if m.group(2) else 0
@@ -232,44 +274,41 @@ def _parse_weight_kg(raw: str, is_target: bool) -> float | None:
     return None
 
 
-def _parse_enum(raw: str, aliases: dict[str, str], is_target: bool) -> str | None:
-    """Short codes ("1"-"4", single letters) are ONLY ever accepted when this
-    field is the current target. activity_level/goal/diet_preference each
-    reuse "1".."4" for their own menu, so without this gate a bare "3" typed
-    while some other field is being asked would get misfiled here purely by
-    coincidence (this was a real bug caught in testing)."""
+def _parse_choice(raw: str, field: str, is_target: bool) -> str | None:
+    aliases = _ENUM_ALIASES[field]
     bare = _bare(raw)
-    if bare in aliases and (is_target or len(bare) > 2):
+    if bare in aliases and (is_target or not bare.isdigit()):
         return aliases[bare]
     normalized = _fold(raw)
-    # Longest alias phrases first so "very active" wins over "active".
-    for phrase in sorted(aliases, key=len, reverse=True):
-        if len(phrase) <= 2 and not is_target:
-            continue  # skip 1-2 char aliases ("1","m") unless this IS the target field
-        if re.search(rf"\b{re.escape(phrase)}\b", normalized):
+    # Numeric menu choices only count when this field is the current question.
+    if is_target:
+        for key, value in aliases.items():
+            if key.isdigit() and re.fullmatch(re.escape(key), bare):
+                return value
+    for phrase in sorted((k for k in aliases if not k.isdigit()), key=len, reverse=True):
+        if re.search(rf"(?<![a-z]){re.escape(phrase)}(?![a-z])", normalized):
             return aliases[phrase]
     return None
 
 
-def _parse_health_text(raw: str, field_limit: int) -> str | None:
+def _parse_relation(raw: str, is_target: bool) -> str | None:
+    value = _parse_choice(raw, "family_hair_loss_relation", is_target)
+    if value:
+        return value
+    if not is_target:
+        return None
     cleaned = _norm(raw)
-    if not cleaned:
+    if not cleaned or len(cleaned) > 100 or _looks_like_gibberish(cleaned):
         return None
-    if is_clear_negative_health_reply(cleaned):
-        return "None reported"
-    # Reject pure junk (e.g. "kdkjhfrekj", "??", ".") as a real answer for a
-    # free-text safety field rather than silently storing it.
-    letters_only = re.sub(r"[^a-zA-Z]", "", cleaned)
-    if len(letters_only) < 2:
-        return None
-    if len(cleaned.split()) == 1 and looks_like_gibberish(cleaned):
-        return None
-    return cleaned[:field_limit]
+    return cleaned
 
 
-# ---------------------------------------------------------------------------
-# Public entry point
-# ---------------------------------------------------------------------------
+def _parse_other_free_text(raw: str, limit: int = 100) -> str | None:
+    cleaned = _norm(raw)
+    if not cleaned or len(cleaned) > limit or _looks_like_gibberish(cleaned):
+        return None
+    return cleaned[:limit]
+
 
 def extract_fields_from_text(
     text: str,
@@ -277,7 +316,7 @@ def extract_fields_from_text(
     missing_fields: list[str],
     history: list[dict] | None = None,
 ) -> dict[str, Any]:
-   
+    """Deterministic onboarding extraction. No LLM call is needed for these fields."""
     raw = _norm(text)
     result: dict[str, Any] = {}
     missing = set(missing_fields)
@@ -287,10 +326,24 @@ def extract_fields_from_text(
         if value is not None:
             result["age"] = value
 
-    if "gender" in missing:
-        value = _parse_gender(raw, is_target=(current_target == "gender"))
+    if "city" in missing:
+        value = _parse_city(raw, is_target=(current_target == "city"))
         if value:
-            result["gender"] = value
+            result["city"] = value
+
+    for field in (
+        "hair_wash_frequency", "water_hardness", "sugary_food_drink_frequency",
+        "sexually_active", "family_hair_loss", "dairy_intake",
+    ):
+        if field in missing:
+            value = _parse_choice(raw, field, is_target=(current_target == field))
+            if value:
+                result[field] = value
+
+    if "family_hair_loss_relation" in missing:
+        value = _parse_relation(raw, is_target=(current_target == "family_hair_loss_relation"))
+        if value:
+            result["family_hair_loss_relation"] = value
 
     if "height_cm" in missing:
         value = _parse_height_cm(raw, is_target=(current_target == "height_cm"))
@@ -301,34 +354,5 @@ def extract_fields_from_text(
         value = _parse_weight_kg(raw, is_target=(current_target == "weight_kg"))
         if value is not None:
             result["weight_kg"] = value
-
-    if "activity_level" in missing:
-        value = _parse_enum(raw, _ACTIVITY_ALIASES, is_target=(current_target == "activity_level"))
-        if value:
-            result["activity_level"] = value
-
-    if "goal" in missing:
-        value = _parse_enum(raw, _GOAL_ALIASES, is_target=(current_target == "goal"))
-        if value:
-            result["goal"] = value
-
-    if "diet_preference" in missing:
-        value = _parse_enum(raw, _DIET_ALIASES, is_target=(current_target == "diet_preference"))
-        if value:
-            result["diet_preference"] = value
-
-    # Free-text safety fields: only ever parsed when they are the CURRENT
-    # target. Unlike the structured fields above, arbitrary prose here could
-    # otherwise be misfiled against the wrong question (e.g. a stray
-    # "no allergies" mentioned while answering the goal question).
-    if current_target == "allergies" and "allergies" in missing:
-        value = _parse_health_text(raw, 1000)
-        if value:
-            result["allergies"] = value
-
-    if current_target == "medical_conditions" and "medical_conditions" in missing:
-        value = _parse_health_text(raw, 1500)
-        if value:
-            result["medical_conditions"] = value
 
     return result

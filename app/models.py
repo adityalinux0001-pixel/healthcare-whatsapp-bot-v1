@@ -37,6 +37,17 @@ class User(Base):
     # prompt (onboarding, general Q&A, diet plan) every single time.
     food_dislikes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Hair-loss onboarding profile. These are nullable for backward compatibility
+    # with existing production users and older rows.
+    city: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    hair_wash_frequency: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    water_hardness: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    sugary_food_drink_frequency: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    sexually_active: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    family_hair_loss: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    family_hair_loss_relation: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    dairy_intake: Mapped[str | None] = mapped_column(String(30), nullable=True)
+
     onboarding_complete: Mapped[bool] = mapped_column(Boolean, default=False)
     # Explicit consent for storing/processing health-related profile information.
     # Nullable keeps existing users and development flows backward-compatible.
@@ -61,17 +72,26 @@ class User(Base):
     diet_plans: Mapped[list["DietPlan"]] = relationship(back_populates="user")
     payment_links: Mapped[list["PaymentLink"]] = relationship(back_populates="user")
 
-    # Health-safety questions are explicit completion requirements. An explicit
-    # "none" answer satisfies the requirement just like a non-empty answer.
+    # Legacy allergy/medical fields remain available for existing users and
+    # downstream safety logic, but they are no longer part of this onboarding flow.
     # NOTE: onboarding no longer collects "name" — the column stays (nullable,
     # unused going forward) only so existing rows and the admin panel keep working.
+    # New hair-loss onboarding. Legacy profile columns stay in the model so
+    # existing users/data and downstream services remain backward-compatible.
     REQUIRED_FIELDS = [
-        "age", "gender", "height_cm", "weight_kg",
-        "activity_level", "goal", "diet_preference",
+        "age", "city",
+        "hair_wash_frequency", "water_hardness",
+        "height_cm", "weight_kg",
+        "sugary_food_drink_frequency",
+        "sexually_active",
+        "family_hair_loss",
+        "dairy_intake",
     ]
 
     def profile_dict(self) -> dict:
         return {
+            # Legacy fields retained for backward compatibility with existing
+            # plans/conversations.
             "name": self.name, "age": self.age, "gender": self.gender,
             "height_cm": self.height_cm, "weight_kg": self.weight_kg,
             "activity_level": self.activity_level, "goal": self.goal,
@@ -79,14 +99,24 @@ class User(Base):
             "allergies": self.allergies or "None reported",
             "medical_conditions": self.medical_conditions or "None reported",
             "food_dislikes": self.food_dislikes or "None reported",
+            # Hair-loss onboarding fields.
+            "city": self.city,
+            "hair_wash_frequency": self.hair_wash_frequency,
+            "water_hardness": self.water_hardness,
+            "sugary_food_drink_frequency": self.sugary_food_drink_frequency,
+            "sexually_active": self.sexually_active,
+            "family_hair_loss": self.family_hair_loss,
+            "family_hair_loss_relation": self.family_hair_loss_relation,
+            "dairy_intake": self.dairy_intake,
         }
 
     def missing_fields(self) -> list[str]:
         missing = [f for f in self.REQUIRED_FIELDS if getattr(self, f) in (None, "")]
-        if not self.allergies_answered:
-            missing.append("allergies")
-        if not self.medical_conditions_answered:
-            missing.append("medical_conditions")
+        # Family relation is only relevant when the user answered YES to family
+        # hair loss. It is intentionally conditional rather than a separate
+        # top-level question for users who answered NO / NOT SURE.
+        if self.family_hair_loss == "yes" and not self.family_hair_loss_relation:
+            missing.append("family_hair_loss_relation")
         return missing
 
 

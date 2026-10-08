@@ -378,6 +378,8 @@ def _apply_extracted_fields(user: User, extracted: dict) -> None:
                 user.allergies_answered = True
             elif field == "medical_conditions":
                 user.medical_conditions_answered = True
+            elif field == "family_hair_loss" and value != "yes":
+                user.family_hair_loss_relation = None
 
 
 async def _handle_onboarding(
@@ -517,6 +519,14 @@ def _format_profile_recall(user: User, fields: list[str]) -> str:
         "allergies": "Allergies",
         "medical_conditions": "Medical conditions",
         "food_dislikes": "Food dislikes",
+        "city": "City",
+        "hair_wash_frequency": "Hair wash frequency",
+        "water_hardness": "Water hardness",
+        "sugary_food_drink_frequency": "Sugary food/drink intake",
+        "sexually_active": "Sexually active",
+        "family_hair_loss": "Family hair loss",
+        "family_hair_loss_relation": "Family hair loss relation",
+        "dairy_intake": "Dairy intake",
     }
     values = user.profile_dict()
     visible: list[str] = []

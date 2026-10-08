@@ -16,6 +16,14 @@ ProfileField = Literal[
     "allergies",
     "medical_conditions",
     "food_dislikes",
+    "city",
+    "hair_wash_frequency",
+    "water_hardness",
+    "sugary_food_drink_frequency",
+    "sexually_active",
+    "family_hair_loss",
+    "family_hair_loss_relation",
+    "dairy_intake",
 ]
 
 DialogueAct = Literal["request", "follow_up", "accept_offer", "acknowledgement", "correction", "other"]

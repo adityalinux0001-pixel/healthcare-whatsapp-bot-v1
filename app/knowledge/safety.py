@@ -97,9 +97,9 @@ def high_risk_profile_message() -> str:
 
 def consent_request_message() -> str:
     return (
-        "Hello! 🌿 I will process your age, weight, allergies, and health-related information "
-        "to provide personalized diet and exercise guidance. This is sensitive information.\n\n"
-        "I need your consent to use and store this information for your plans and conversations. "
+        "Hello! 🌿 I’ll ask a few questions about your age, weight, hair care, diet-related habits, "
+        "and other sensitive personal information to personalize your guidance.\n\n"
+        "I need your consent to store and use this information for your conversations and recommendations. "
         "Reply *YES* to continue. Reply *NO* if you do not want to provide consent."
     )
 

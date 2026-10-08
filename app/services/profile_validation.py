@@ -68,11 +68,49 @@ _GENDER_ALIASES = {
     "girl": "female",
 }
 
+_ALLOWED_HAIR_WASH = {"daily", "2_3_times_week", "once_week", "less_once_week"}
+_ALLOWED_WATER = {"soft", "moderately_hard", "hard", "very_hard", "not_sure"}
+_ALLOWED_SUGAR = {"none_or_very_little", "low", "moderate", "high", "very_high"}
+_ALLOWED_SEXUAL = {"yes", "no", "prefer_not_to_say"}
+_ALLOWED_FAMILY_HAIR_LOSS = {"yes", "no", "not_sure"}
+_ALLOWED_DAIRY = {"none", "low", "moderate", "high", "very_high"}
+
 _TEXT_LIMITS = {
     "gender": 30,
+    "city": 100,
+    "family_hair_loss_relation": 100,
     "allergies": 1000,
     "medical_conditions": 1500,
     "food_dislikes": 1000,
+}
+
+_HAIR_WASH_ALIASES = {
+    "daily": "daily", "every day": "daily",
+    "2_3_times_week": "2_3_times_week", "2-3 times a week": "2_3_times_week",
+    "twice a week": "2_3_times_week", "three times a week": "2_3_times_week",
+    "once_week": "once_week", "once a week": "once_week", "weekly": "once_week",
+    "less_once_week": "less_once_week", "less than once a week": "less_once_week",
+}
+_WATER_ALIASES = {
+    "soft": "soft", "soft water": "soft",
+    "moderately_hard": "moderately_hard", "moderately hard": "moderately_hard", "moderately hard water": "moderately_hard",
+    "hard": "hard", "hard water": "hard",
+    "very_hard": "very_hard", "very hard": "very_hard", "very hard water": "very_hard",
+    "not_sure": "not_sure", "not sure": "not_sure", "unsure": "not_sure",
+}
+_SUGAR_ALIASES = {
+    "none_or_very_little": "none_or_very_little", "none": "none_or_very_little", "very little": "none_or_very_little",
+    "low": "low", "moderate": "moderate", "high": "high", "very_high": "very_high", "very high": "very_high",
+}
+_SEXUAL_ALIASES = {
+    "yes": "yes", "no": "no", "prefer_not_to_say": "prefer_not_to_say", "prefer not to say": "prefer_not_to_say",
+}
+_FAMILY_HAIR_LOSS_ALIASES = {
+    "yes": "yes", "no": "no", "not_sure": "not_sure", "not sure": "not_sure", "unsure": "not_sure",
+}
+_DAIRY_ALIASES = {
+    "none": "none", "low": "low", "moderate": "moderate", "high": "high",
+    "very_high": "very_high", "very high": "very_high",
 }
 
 
@@ -181,5 +219,35 @@ def validate_extracted_fields(extracted: dict[str, Any]) -> dict[str, Any]:
         value = _normalize_list_text(extracted["food_dislikes"], _TEXT_LIMITS["food_dislikes"])
         if value:
             clean["food_dislikes"] = value
+
+    if "city" in extracted:
+        value = _clean_text(extracted["city"], _TEXT_LIMITS["city"])
+        if value:
+            clean["city"] = value
+
+    for field, aliases, allowed in (
+        ("hair_wash_frequency", _HAIR_WASH_ALIASES, _ALLOWED_HAIR_WASH),
+        ("water_hardness", _WATER_ALIASES, _ALLOWED_WATER),
+        ("sugary_food_drink_frequency", _SUGAR_ALIASES, _ALLOWED_SUGAR),
+        ("sexually_active", _SEXUAL_ALIASES, _ALLOWED_SEXUAL),
+        ("family_hair_loss", _FAMILY_HAIR_LOSS_ALIASES, _ALLOWED_FAMILY_HAIR_LOSS),
+        ("dairy_intake", _DAIRY_ALIASES, _ALLOWED_DAIRY),
+    ):
+        if field in extracted:
+            value = _normalize_enum(extracted[field], aliases, allowed)
+            if value:
+                clean[field] = value
+
+    if "family_hair_loss_relation" in extracted:
+        value = _clean_text(extracted["family_hair_loss_relation"], _TEXT_LIMITS["family_hair_loss_relation"])
+        if value:
+            relation_aliases = {
+                "father": "father", "mother": "mother", "sibling": "sibling",
+                "brother": "sibling", "sister": "sibling",
+                "grandparent": "grandparent", "grandfather": "grandparent", "grandmother": "grandparent",
+                "multiple_family_members": "multiple_family_members",
+                "multiple family members": "multiple_family_members", "other": "other",
+            }
+            clean["family_hair_loss_relation"] = relation_aliases.get(value.casefold(), value)
 
     return clean
