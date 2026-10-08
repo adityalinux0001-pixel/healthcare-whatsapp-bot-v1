@@ -384,29 +384,7 @@ async def _handle_onboarding(
     db: AsyncSession, user: User, phone: str, text: str,
     history: list[dict], summary: str | None,
 ) -> None:
-    """Fully deterministic, LLM-free onboarding state machine.
-
-    One required field is targeted at a time (the first entry of
-    ``user.missing_fields()``, which is always in the same fixed order — see
-    app/services/onboarding_extract.ONBOARDING_ORDER). Every turn:
-
-      1. Parse the message with extract_fields_from_text(). The current
-         target field gets permissive parsing (bare numbers/words accepted);
-         every other still-missing field only matches unambiguous phrasing,
-         so a stray word never gets filed under the wrong question.
-      2. Apply whatever validated fields came out of that.
-      3. If the CURRENT target is still unanswered, re-send the exact same
-         question plus a short format hint and stop — we never advance,
-         never guess, and never silently drop the field. This is what
-         prevents both failure modes seen before: names getting mangled by
-         free-form LLM extraction, and the allergies/medical-conditions
-         question looping because a "no" variant didn't match a strict
-         fullmatch regex.
-      4. Otherwise move on to the next missing field, or finish onboarding.
-
-    No Gemini call happens anywhere in this path, so there is nothing here
-    that can behave differently between two identical inputs.
-    """
+   
     from app.redis_client import get_arq_pool
 
     missing = user.missing_fields()

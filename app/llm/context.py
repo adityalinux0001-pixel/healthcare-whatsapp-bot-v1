@@ -1,12 +1,5 @@
 from __future__ import annotations
 
-"""Context assembly for conversational responses.
-
-The router decides *which* saved state and prior turns are relevant. This module
-applies those decisions and constructs a deliberately small response context.
-It keeps the full user profile and the raw message history out of the answer
-prompt unless they are actually needed for the current turn.
-"""
 
 from typing import Any
 
@@ -26,13 +19,7 @@ def build_response_context(
     summary: str | None,
     route: Any | None,
 ) -> tuple[dict[str, Any], list[dict], str | None]:
-    """Return minimum necessary context for the final answer generator.
 
-    The semantic router is trusted only for *relevance selection*. The application
-    still enforces hard boundaries: name is never exposed to ordinary answering,
-    at most four prior turns are selected, indices must be valid, and long-term
-    memory is opt-in per turn.
-    """
     selected_fields: set[str] = set()
     selected_history_indices: list[int] = []
     use_summary = False
@@ -43,33 +30,18 @@ def build_response_context(
         use_summary = bool(getattr(route, "use_long_term_memory", False))
 
         dialogue_act = getattr(route, "dialogue_act", "request")
-        # History is a dialogue-resolution resource, not general background.
-        # Self-contained requests must not inherit semantically related older turns
-        # such as an earlier pizza/rice question. Genuine follow-ups, acceptance of
-        # an immediately preceding assistant offer, and a correction/pushback on
-        # something the assistant just said or did may carry prior turns -- a
-        # correction is definitionally about the immediately preceding turn, so
-        # denying it that context is what produced replies that contradicted the
-        # assistant's own last action.
+ 
         if dialogue_act not in {"follow_up", "accept_offer", "correction"}:
             selected_history_indices = []
 
-        # Never let the router smuggle a large or stale context window into the
-        # final answer. A connected turn gets at most the two most useful messages.
+   
         selected_history_indices = selected_history_indices[-2:]
 
-        # Grounded health answers get the minimum safety-critical profile context
-        # regardless of whether the router explicitly listed it.
         if bool(getattr(route, "grounding_required", False)):
-            # These facts are the minimum durable context needed to personalize
-            # ordinary nutrition/health answers without asking the user to repeat
-            # information already stored in the profile. The final model is still
-            # explicitly instructed never to echo these facts unless useful.
+   
             selected_fields.update(_HEALTH_SAFETY_FIELDS)
             selected_fields.update(_HEALTH_PERSONALIZATION_FIELDS)
 
-        # Never leak name into normal answer context. Name recall is handled by the
-        # deterministic profile-recall path instead.
         selected_fields.discard("name")
 
     # Keep only fields that actually exist in the persisted profile.

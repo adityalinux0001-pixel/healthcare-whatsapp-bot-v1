@@ -29,9 +29,7 @@ async def get_active_subscription(db: AsyncSession, user: User) -> Subscription 
     if sub:
         return sub
 
-    # DEV/TEST ONLY — see settings.bypass_subscription. Hard-guarded by
-    # environment so this can never activate in production even if the flag
-    # is left on in a shared .env by mistake.
+ 
     if settings.bypass_subscription and settings.environment != "production":
         return await _get_or_create_dev_bypass_subscription(db, user, now)
 
@@ -41,12 +39,7 @@ async def get_active_subscription(db: AsyncSession, user: User) -> Subscription 
 async def _get_or_create_dev_bypass_subscription(
     db: AsyncSession, user: User, now: datetime
 ) -> Subscription:
-    """DEV/TEST ONLY. Creates/reuses one real Subscription row per user so the
-    rest of the app (diet plan FK, renewal-reminder queries, historical plan
-    lookups) behaves exactly as it would for a real paying subscriber — this
-    is not a fake in-memory object, it's a normal DB row, just $0 and tagged
-    so it's easy to find and clean up later.
-    """
+
     payment_id = f"{DEV_BYPASS_PAYMENT_ID_PREFIX}{user.id}"
     existing = await db.scalar(
         select(Subscription).where(Subscription.razorpay_payment_id == payment_id)
@@ -74,10 +67,7 @@ async def _get_or_create_dev_bypass_subscription(
 
 
 async def prompt_payment(db: AsyncSession, user: User) -> None:
-    """Send payment link — reuse an existing pending link if it hasn't expired.
 
-    PaymentLink is the DB source of truth; Redis is only a fast-path cache.
-    """
     from app.redis_client import redis_client
 
     phone = user.phone_number

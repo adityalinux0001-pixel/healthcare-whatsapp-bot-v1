@@ -149,19 +149,16 @@ class DietPlan(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
-    # Subscription period that entitled the user to this plan. Nullable for
-    # historical rows created before this lifecycle tracking was introduced.
+
     subscription_id: Mapped[int | None] = mapped_column(
         ForeignKey("subscriptions.id"), nullable=True, index=True
     )
-    # Canonical plan date = midnight in Asia/Kolkata converted to UTC.
-    # This keeps onboarding-time and 06:00 IST cron generation on the same day key.
+   
     plan_date: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     # Monotonic service-day number across renewals. It does not reset on renewal.
     day_number: Mapped[int] = mapped_column(Integer)
     content: Mapped[str] = mapped_column(Text, default="", server_default="")
-    # pending → sending → sent. failed is retryable; unknown means the external
-    # provider outcome was ambiguous and must be reconciled before retrying.
+
     delivery_status: Mapped[str] = mapped_column(
         String(20), default="pending", server_default="pending"
     )
@@ -170,18 +167,10 @@ class DietPlan(Base):
     last_send_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     provider_message_id: Mapped[str | None] = mapped_column(String(150), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    # FIX: tracks the most recent semantic plan-modification instruction applied
-    # to this row, and when. Lets revise_today_plan recognize a near-duplicate
-    # request (e.g. the user restating the same complaint because a prior reply
-    # confused them) and reuse the existing plan instead of silently
-    # regenerating a different-but-equivalent one via a fresh LLM call each time.
+
     last_modification_instruction: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_modified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    # Daily check-in: did the user follow this plan?
-    #   NULL      -> legacy plan / no check-in was ever requested (never blocks anything)
-    #   pending   -> plan delivered + buttons sent, user has not answered yet.
-    #                While the LATEST plan is pending, the next day's plan is NOT generated.
-    #   done / not_done / skipped -> answered; next plan can be generated.
+ 
     checkin_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
     checkin_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     checkin_responded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

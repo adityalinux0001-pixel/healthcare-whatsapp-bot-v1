@@ -1,35 +1,9 @@
-"""Deterministic onboarding engine.
 
-Design goal: onboarding must survive adversarial / garbage / out-of-order
-input from real users (and QA testers deliberately trying to break it)
-without ever looping forever, merging unrelated answers together, or
-silently skipping a required field. To get that guarantee we do NOT let an
-LLM decide what was said or what to ask next during onboarding — every
-question is a fixed string and every answer is parsed by an explicit,
-testable rule for that specific field only. There is nothing here whose
-output can vary between two runs on the same input.
-
-ONBOARDING_ORDER defines the single source of truth for field order. The
-bot always targets `ONBOARDING_ORDER[i]`, the first field not yet answered
-on the user's profile, and will not advance past it until that field
-specifically has a valid value. A message is still allowed to fill in
-*other* still-missing fields opportunistically (e.g. "male 39" supplies
-gender + age even while the bot is still waiting on the target field) —
-this keeps the flow natural — but only the current target field decides
-whether the bot moves on.
-
-Onboarding no longer collects the user's name — it starts directly at age.
-"""
 
 from __future__ import annotations
 
 import re
 from typing import Any
-
-# ---------------------------------------------------------------------------
-# Canonical field order + copy. Keep in sync with User.REQUIRED_FIELDS order
-# in app/models.py (missing_fields() already returns this same order).
-# ---------------------------------------------------------------------------
 
 ONBOARDING_ORDER: list[str] = [
     "age", "gender", "height_cm", "weight_kg",
@@ -37,9 +11,7 @@ ONBOARDING_ORDER: list[str] = [
     "allergies", "medical_conditions",
 ]
 
-# Every question below ends with a "Reply like this:" example that shows the
-# user the exact text they can send back — this is what makes each question
-# self-service (no need to guess the expected format or wait for a retry hint).
+
 QUESTIONS: dict[str, str] = {
     "age": (
         "Let's set up your profile — just a few quick questions 😊\n\n"
@@ -98,10 +70,7 @@ QUESTIONS: dict[str, str] = {
     ),
 }
 
-# Shown ONLY when the current target field's answer could not be understood.
-# Kept short and always paired with the original question, same as a strict
-# format-validator error, never a vague "I didn't understand you" loop — and
-# always with a concrete example so the retry itself is self-service too.
+
 RETRY_HINTS: dict[str, str] = {
     "age": "Hmm, I didn't catch that. Please send your age as just a number between 1 and 120.\n\n*Reply like this:* 28",
     "gender": "Please reply with \"male\" or \"female\" (or 1 / 2).\n\n*Reply like this:* male",
@@ -154,9 +123,7 @@ def _fold(text: str) -> str:
 
 
 def looks_like_gibberish(token: str) -> bool:
-    """True for keyboard-mash strings like 'kdkjhfrekj' (5+ consonants in a row,
-    no vowel) — used to keep obvious junk out of the free-text health fields
-    (allergies/medical_conditions)."""
+
     return bool(re.search(r"(?i)[bcdfghjklmnpqrstvwxyz]{5,}", token))
 
 
@@ -173,12 +140,7 @@ _HEALTH_FILLER_WORDS = {
 
 
 def is_clear_negative_health_reply(text: str) -> bool:
-    """Catches every phrasing seen in the wild for 'I have none of that':
-    'no', 'None', 'no i dont have', 'I dont have any allergies and
-    medical conditions', etc. — by stripping filler words rather than
-    matching a fixed list of exact sentences (which is what silently
-    broke the earlier fullmatch-based version and caused repeat-looping).
-    """
+ 
     tokens = re.findall(r"[a-z']+", _fold(text))
     if not tokens:
         return False
@@ -192,11 +154,7 @@ def _bare(text: str) -> str:
     return _fold(text).strip(" .!?")
 
 
-# ---------------------------------------------------------------------------
-# Per-field parsers. Each takes the raw user text (plus light context) and
-# returns a value or None. None means "did not answer this field" — the
-# caller decides what to do about that (re-ask vs. leave for later).
-# ---------------------------------------------------------------------------
+
 
 def _parse_age(raw: str, is_target: bool) -> int | None:
     normalized = _fold(raw)
@@ -319,13 +277,7 @@ def extract_fields_from_text(
     missing_fields: list[str],
     history: list[dict] | None = None,
 ) -> dict[str, Any]:
-    """Opportunistically pull every field this message answers.
-
-    `current_target` gets the most permissive parsing (bare numbers/words
-    are accepted for it specifically); every other still-missing field only
-    matches on explicit, unambiguous phrasing so an answer meant for one
-    question is never mistaken for another.
-    """
+   
     raw = _norm(text)
     result: dict[str, Any] = {}
     missing = set(missing_fields)

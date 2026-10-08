@@ -3,9 +3,7 @@ import hashlib
 
 
 def verify_meta_signature(app_secret: str, payload: bytes, signature_header: str | None) -> bool:
-    """Meta signs every webhook delivery with the app secret (HMAC-SHA256).
-    Without this check, anyone who finds your webhook URL could inject fake
-    messages or payment confirmations."""
+ 
     if not signature_header or not signature_header.startswith("sha256="):
         return False
     expected = hmac.new(app_secret.encode(), payload, hashlib.sha256).hexdigest()

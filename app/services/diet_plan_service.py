@@ -1,4 +1,4 @@
-"""Daily personalized diet/exercise plan lifecycle."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -46,8 +46,7 @@ def _canonical_day_from_local_date(local_date) -> datetime:
 # Daily check-in + 24h free-form window (no paid WhatsApp templates anywhere)
 # --------------------------------------------------------------------------
 # WhatsApp allows free-form (non-template) messages for 24h after the user's
-# last inbound message. The daily check-in buttons make the user message us
-# every day, which keeps that window open for the next morning's plan.
+
 SERVICE_WINDOW_SECONDS = 24 * 60 * 60
 PLAN_SEND_HOUR_IST = 6  # same hour as the daily cron in app/worker.py
 
@@ -122,17 +121,12 @@ async def get_unanswered_prior_day_checkin(db, user_id: int) -> DietPlan | None:
 
 
 async def needs_plan_resume(db, user: User) -> bool:
-    """True when a generate/deliver job would do real work for this user right now.
-
-    Used when the user messages us (or answers a check-in) to continue the daily
-    flow exactly where it stopped, without waiting for the next 06:00 cron.
-    """
+  
     from app.knowledge.safety import detect_high_risk_profile
 
     if not user.onboarding_complete or (user.age is not None and user.age < 18):
         return False
-    # High-risk profiles never get automated plans (the job would just resend the
-    # warning message), so never trigger it from ordinary chat.
+
     if detect_high_risk_profile(user.profile_dict()):
         return False
 
@@ -173,11 +167,7 @@ async def send_checkin_prompt(phone: str, plan_id: int, day_number: int, *, remi
 
 
 async def _start_checkin(user: User, plan_id: int, day_number: int) -> None:
-    """Mark the delivered plan's check-in as pending and send the buttons.
 
-    Never raises: the plan itself is already delivered. If the buttons fail to
-    send, the user gets them again (reminder) the next time they message us.
-    """
     try:
         async with AsyncSessionLocal() as db:
             plan = await db.get(DietPlan, plan_id)
@@ -500,12 +490,6 @@ async def revise_today_plan(
         )
         return PlanRevisionResult(plan=None)  # caller sends its own fallback reply
 
-    # FIX: if this instruction closely matches one already applied to this same
-    # plan a short while ago, don't regenerate. revise_today_plan calls an LLM
-    # each time, so re-running it for what is really the same underlying
-    # request just produces a different, equally-valid-looking plan -- which
-    # reads to the user as the bot losing track of what it already did. Reuse
-    # the current plan instead and let the caller say so explicitly.
     now = datetime.now(timezone.utc)
     if is_duplicate_modification(
         plan.last_modification_instruction, plan.last_modified_at, modification_instruction, now
@@ -525,15 +509,11 @@ async def revise_today_plan(
         summary=user.conversation_summary,
         day_number=plan.day_number,
         modification_instruction=modification_instruction,
-        # FIX: the model previously had no idea what today's plan actually
-        # contained when "revising" it, so it just generated a fresh one from
-        # scratch every time. Passing the existing rendered content lets the
-        # revision prompt preserve everything except the requested edit.
+   
         current_plan_text=plan.content,
     )
 
-    # Preserve the same DietPlan row and day_number. Only today's content and
-    # delivery bookkeeping are reset for the new user-requested version.
+
     plan.content = plan_text
     plan.delivery_status = "pending"
     plan.sent_at = None
@@ -559,9 +539,7 @@ async def generate_and_send_daily_plans() -> None:
     from app.redis_client import get_arq_pool
 
     async with AsyncSessionLocal() as db:
-        # Users whose 24h window closes soonest (oldest last inbound message) go
-        # first, so a user who tapped the check-in seconds after yesterday's plan
-        # is served before their free-form window runs out.
+  
         last_inbound = (
             select(Message.user_id.label("uid"), func.max(Message.created_at).label("last_in"))
             .where(Message.role == "user")
