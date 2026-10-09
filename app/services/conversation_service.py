@@ -142,6 +142,13 @@ async def handle_incoming_message(
             await send_text_message(phone, emergency_response())
             return
 
+        hair_concern = detect_hair_concern(text)
+        if hair_concern:
+            # Promptly refer sudden/patchy loss or inflamed scalp symptoms for
+            # assessment regardless of payment status; do not diagnose in chat.
+            await send_text_message(phone, hair_concern_response(hair_concern))
+            return
+
         # Daily quota: enforce before persistence/payment/LLM work so a user cannot
         # consume more than 25 normal inbound messages in one IST calendar day.
         # The existing per-user Redis lock makes the DB count check serial per user,
