@@ -136,12 +136,15 @@ async def prompt_payment(db: AsyncSession, user: User) -> None:
 
 def _payment_message(url: str) -> str:
     return (
-        f"Hello! I'm your Hair & Scalp Assistant. 🌿\n\n"
-        f"Subscribe for {settings.subscription_days} days of hair- and scalp-health guidance "
-        f"— ₹{settings.subscription_price_inr} only:\n\n"
+        "🌿 *Your personalized Hair & Scalp plan*\n\n"
+        f"✨ {settings.subscription_days} days of daily hair-care routines made for your profile\n"
+        "✨ Simple, step-by-step hair & scalp-health guidance\n"
+        "✨ Support for hair shedding, thinning, dandruff and scalp care\n\n"
+        f"Activate now for just ₹{settings.subscription_price_inr}:\n\n"
         f"{url}\n\n"
-        "Your paid period starts when the first daily hair-care routine under that period is successfully sent, "
-        "not on the payment date. If you already have a running subscription, this paid period stays queued until it is next in line."
+        f"📅 Your plan starts reaching you within 2–3 business days of payment, and your {settings.subscription_days} days "
+        "begin from the day your first routine is sent, not the payment date. "
+        "If you already have a running subscription, this paid period stays queued until it is next in line."
     )
 
 

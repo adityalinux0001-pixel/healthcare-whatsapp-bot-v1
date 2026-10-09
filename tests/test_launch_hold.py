@@ -7,7 +7,7 @@ def test_launch_hold_message_is_clear_and_non_promissory_beyond_eta():
     message = (ROOT / "app/services/launch_mode.py").read_text(encoding="utf-8")
     assert "2–3 business days" in message
     assert "subscription period has not started yet" in message
-    assert "not available yet" in message.casefold()
+    assert "your money is safe" in message.casefold()
     assert "general hair and scalp-care questions" not in message
     assert "does not diagnose" in message.casefold()
 

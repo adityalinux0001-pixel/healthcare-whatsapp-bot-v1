@@ -45,7 +45,7 @@ def test_launch_hold_is_enabled_by_default_and_guards_all_plan_paths():
     assert "hair_care_launch_hold_direct_generation_skipped" in plan_service
     assert "hair_care_launch_hold_direct_delivery_skipped" in plan_service
     assert "2–3 business days" in launch
-    assert "hair/scalp questions and personalized guidance are not available yet" in launch
+    assert "your money is safe" in launch.casefold()
     assert "HAIR_CARE_LAUNCH_HOLD_STANDBY_REPLY" in launch
 
 

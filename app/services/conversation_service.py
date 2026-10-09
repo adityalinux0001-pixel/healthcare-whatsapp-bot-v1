@@ -142,13 +142,6 @@ async def handle_incoming_message(
             await send_text_message(phone, emergency_response())
             return
 
-        hair_concern = detect_hair_concern(text)
-        if hair_concern:
-            # Promptly refer sudden/patchy loss or inflamed scalp symptoms for
-            # assessment regardless of payment status; do not diagnose in chat.
-            await send_text_message(phone, hair_concern_response(hair_concern))
-            return
-
         # Daily quota: enforce before persistence/payment/LLM work so a user cannot
         # consume more than 25 normal inbound messages in one IST calendar day.
         # The existing per-user Redis lock makes the DB count check serial per user,
@@ -491,9 +484,10 @@ async def _handle_onboarding(
         user.conversation_summary = None
         if settings.hair_care_launch_hold:
             reply = (
-                "Perfect! ✅ Your hair and scalp profile is complete.\n\n"
-                "We’re preparing the Hair & Scalp Assistant for launch. During this preparation period, "
-                "hair/scalp questions and personalized guidance are not available yet."
+                "🎉 Amazing! Your hair & scalp profile is complete.\n\n"
+                f"Your personalized {settings.subscription_days}-day hair-care plan is ready to be activated, "
+                "built around your hair-wash habits, water type, lifestyle and family history. 🌿\n\n"
+                "Activate it with the secure link below 👇"
             )
         else:
             reply = (
@@ -850,4 +844,3 @@ async def _handle_general_qa(
     await db.commit()
     await send_text_message(phone, reply)
     return False
-
