@@ -1,5 +1,5 @@
 
-from pydantic import field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -34,14 +34,15 @@ class Settings(BaseSettings):
     whatsapp_verify_token: str
     whatsapp_app_secret: str
     whatsapp_api_version: str = "v21.0"
-    whatsapp_daily_plan_template_name: str = ""
-    whatsapp_daily_plan_template_language_code: str = "en"
 
     gemini_api_key: str
     gemini_model_chat: str = "gemini-2.5-flash-lite"
     # Separate semantic router model so routing cost/latency can be tuned independently.
     gemini_model_router: str = "gemini-2.5-flash-lite"
-    gemini_model_diet_plan: str = "gemini-2.5-flash"
+    gemini_model_hair_plan: str = Field(
+        default="gemini-2.5-flash",
+        validation_alias=AliasChoices("GEMINI_MODEL_HAIR_PLAN", "GEMINI_MODEL_DIET_PLAN"),
+    )
 
     razorpay_key_id: str
     razorpay_key_secret: str
@@ -52,16 +53,17 @@ class Settings(BaseSettings):
 
     knowledge_chroma_dir: str = "./data/knowledge/chroma"
     knowledge_embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
-    knowledge_top_k_diet: int = 10
     knowledge_top_k_qa: int = 8
-    knowledge_top_k_exercise: int = 5
     knowledge_authoritative_query_expansions: int = 4
-    knowledge_min_authoritative_results: int = 2
     knowledge_min_similarity: float = 0.25
     knowledge_min_authoritative_score: float = 0.50
 
     worker_heartbeat_required: bool = False
     worker_heartbeat_key: str = "dietbot:worker:heartbeat"
+
+    # Temporary launch hold: keep True until the first pilot users are ready for plans.
+    # When False, the 06:00 IST hair-care routine workflow is enabled.
+    hair_care_launch_hold: bool = True
 
     # Production safety gate.
     # Keep False for local/dev compatibility; set True in production.

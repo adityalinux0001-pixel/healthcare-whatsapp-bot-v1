@@ -1,21 +1,5 @@
-# Built knowledge base
+# Runtime knowledge base
 
-The runtime knowledge base is a **grounded evidence layer**, not a general-purpose document dump.
+ChromaDB data is generated during image build or by `python scripts/build_knowledge_base.py --replace`; it should not be committed as a static source artifact. The builder indexes only the hair/scalp authoritative summaries in `data/sources/external/hair_loss_guidelines.json`. User-specific profile data is never indexed.
 
-Build it with:
-
-```bash
-python scripts/build_knowledge_base.py --replace
-```
-
-The default build indexes only authoritative sources. Use `--include-supporting` only when non-clinical example datasets are intentionally needed.
-
-Runtime retrieval applies:
-
-- source-role filtering;
-- minimum semantic-similarity thresholds;
-- an authority-weighted score;
-- a minimum authoritative-result requirement for plan generation;
-- provenance metadata (`source`, `reference`, and URL).
-
-The application never falls back to free-generated health guidance when authoritative context is unavailable.
+The `manifest.json` records the source hash, metadata, and indexing count from the latest build.

@@ -4,13 +4,17 @@ from __future__ import annotations
 from typing import Any
 
 
-# These fields are useful for grounded health advice as hidden safety context.
-# They are not a mandate to mention or repeat them in the response.
+# Relevant legacy safety context is included only when a value was actually saved.
+# New hair onboarding does not pretend an unasked medical question was answered.
 _HEALTH_SAFETY_FIELDS = ("allergies", "medical_conditions")
 
-# Core personalization facts that should be available to ordinary grounded health
-# answers whenever they exist. They are hidden context, not response text.
-_HEALTH_PERSONALIZATION_FIELDS = ("goal", "diet_preference")
+# Hair-related profile fields appropriate for regular grounded answers. Sensitive
+# sexual-activity information is intentionally excluded from this list.
+_HAIR_PERSONALIZATION_FIELDS = (
+    "age", "city", "height_cm", "weight_kg", "hair_wash_frequency",
+    "water_hardness", "sugary_food_drink_intake", "family_hair_loss",
+    "family_hair_loss_relation", "dairy_intake",
+)
 
 
 def build_response_context(
@@ -40,9 +44,13 @@ def build_response_context(
         if bool(getattr(route, "grounding_required", False)):
    
             selected_fields.update(_HEALTH_SAFETY_FIELDS)
-            selected_fields.update(_HEALTH_PERSONALIZATION_FIELDS)
+            selected_fields.update(_HAIR_PERSONALIZATION_FIELDS)
 
         selected_fields.discard("name")
+        # Sensitive sexual-activity information is never part of ordinary QA
+        # context, even if a model route mistakenly requests it. Explicit profile
+        # recall is handled separately by the application.
+        selected_fields.discard("sexually_active")
 
     # Keep only fields that actually exist in the persisted profile.
     response_profile = {
@@ -66,7 +74,7 @@ def build_response_context(
         response_history = history[-2:] if history else []
         response_profile = {
             field: profile[field]
-            for field in (*_HEALTH_SAFETY_FIELDS, *_HEALTH_PERSONALIZATION_FIELDS)
+            for field in (*_HEALTH_SAFETY_FIELDS, *_HAIR_PERSONALIZATION_FIELDS)
             if field in profile
         }
 

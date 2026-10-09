@@ -54,7 +54,7 @@ def test_follow_up_keeps_only_small_relevant_history():
     assert selected == history[-2:]
 
 
-def test_saved_plan_route_without_plan_reference_is_downgraded():
+def test_saved_plan_route_without_plan_reference_is_preserved_for_safe_lookup_fallback():
     route = ConversationRoute(
         intent="saved_plan_retrieval",
         dialogue_act="request",
@@ -63,8 +63,8 @@ def test_saved_plan_route_without_plan_reference_is_downgraded():
         plan_reference="none",
     )
     normalized = normalize_conversation_route(route)
-    assert normalized.intent == "general_health"
-    assert normalized.grounding_required is True
+    assert normalized.intent == "saved_plan_retrieval"
+    assert normalized.grounding_required is False
 
 
 def test_profile_recall_without_fields_is_not_executed():

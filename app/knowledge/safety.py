@@ -45,6 +45,25 @@ _HIGH_RISK_PATTERNS = (
 )
 
 
+_HAIR_CONCERN_PATTERNS = {
+    "sudden_or_patchy_hair_loss": (
+        "sudden hair loss", "hair falling out in clumps", "hair comes out in clumps",
+        "sudden bald patch", "bald patch appeared", "patchy hair loss", "rapid hair loss",
+        "suddenly losing hair", "suddenly lost hair",
+    ),
+    "scalp_inflammation_or_infection": (
+        "painful scalp", "scalp pain", "burning scalp", "tender scalp", "swollen scalp",
+        "scalp swelling", "pus on my scalp", "scalp pus", "sores on my scalp",
+        "scalp sores", "bleeding scalp", "red inflamed scalp",
+    ),
+    "eyebrow_or_body_hair_loss": (
+        "eyebrow hair loss", "losing my eyebrows", "my eyebrows are falling out",
+        "eyebrows falling out", "eyelashes falling out", "my eyelashes are falling out",
+        "body hair falling out", "lost body hair",
+    ),
+}
+
+
 def _is_negated(normalized: str, phrase: str) -> bool:
     index = normalized.find(phrase)
     while index >= 0:
@@ -68,6 +87,31 @@ def detect_red_flag(text: str) -> str | None:
     return None
 
 
+def detect_hair_concern(text: str) -> str | None:
+    """Detect hair/scalp symptoms that should receive clinician-referral guidance."""
+    normalized = re.sub(r"\s+", " ", text.casefold()).strip()
+    for reason, phrases in _HAIR_CONCERN_PATTERNS.items():
+        for phrase in phrases:
+            if phrase in normalized and not _is_negated(normalized, phrase):
+                return reason
+    return None
+
+
+def hair_concern_response(reason: str | None = None) -> str:
+    if reason == "sudden_or_patchy_hair_loss":
+        detail = "Sudden, rapid, or patchy hair loss needs prompt assessment by a dermatologist."
+    elif reason == "scalp_inflammation_or_infection":
+        detail = "Scalp pain, burning, swelling, sores, or pus should be assessed promptly by a healthcare professional."
+    elif reason == "eyebrow_or_body_hair_loss":
+        detail = "Hair loss affecting eyebrows, eyelashes, or other body areas should be assessed by a dermatologist."
+    else:
+        detail = "The symptom you described may need professional assessment."
+    return (
+        detail + " I can't diagnose the cause in chat. Please arrange a medical assessment soon, "
+        "especially if it is worsening or the scalp is painful or inflamed."
+    )
+
+
 def detect_high_risk_profile(profile: dict) -> str | None:
     normalized = re.sub(r"\s+", " ", str(profile.get("medical_conditions") or "").casefold()).strip()
     for pattern in _HIGH_RISK_PATTERNS:
@@ -78,34 +122,32 @@ def detect_high_risk_profile(profile: dict) -> str | None:
 
 def emergency_response() -> str:
     return (
-        "⚠️ The information you provided may describe an urgent symptom. "
-        "I cannot safely diagnose or manage this as a routine diet/exercise question. "
-        "Please seek urgent medical evaluation, and contact local emergency services if symptoms are severe or worsening."
+        "⚠️ The symptom you described may be urgent. I can't diagnose or manage an emergency in chat. "
+        "Please seek urgent medical care now, and contact local emergency services if symptoms are severe or worsening."
     )
 
 
 def high_risk_profile_message() -> str:
     return (
         "Thank you for sharing that. 🌿 Based on the health information in your profile, "
-        "an automated diet/exercise plan is not something I can safely generate for you — "
-        "this needs guidance from a doctor or registered dietitian who knows your medical history.\n\n"
-        "I won't be asking for payment or generating a plan on this account. "
-        "Please do consult a qualified healthcare professional for advice suited to your condition. "
-        "I'm still here if you have general questions."
+        "personalized medical treatment advice isn't something I can safely provide in chat. "
+        "Please consult a qualified healthcare professional who knows your medical history. "
+        "I can still share general, evidence-based information about hair and scalp health."
     )
 
 
 def consent_request_message() -> str:
     return (
-        "Hello! 🌿 I’ll ask a few questions about your age, weight, hair care, diet-related habits, "
-        "and other sensitive personal information to personalize your guidance.\n\n"
-        "I need your consent to store and use this information for your conversations and recommendations. "
-        "Reply *YES* to continue. Reply *NO* if you do not want to provide consent."
+        "Hello! 🌿 I'm your Hair & Scalp Assistant. To personalize hair-related guidance, I may store your age, city, "
+        "hair-washing habits, water type, height/weight, and food-habit answers. For adults, one question is about "
+        "sexual activity; you may choose *Prefer not to say*.\n\n"
+        "This includes your family hair-loss history. This information can be sensitive. Please reply *YES* if you agree to its storage and use for this service, "
+        "or *NO* if you do not agree. You can stop onboarding at any time."
     )
 
 
 def consent_declined_message() -> str:
     return (
-        "Understood. I will not collect health-related profile information. 🌿\n"
-        "When you are ready, reply *YES* to start personalized onboarding."
+        "Understood. I won't collect your hair-profile answers without your consent. 🌿\n"
+        "If you change your mind, reply *YES* to start onboarding."
     )

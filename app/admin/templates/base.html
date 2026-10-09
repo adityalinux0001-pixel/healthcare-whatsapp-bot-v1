@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}DietBot Admin{% endblock %}</title>
+  <title>{% block title %}Hair Assistant Admin{% endblock %}</title>
   <style>
     * { box-sizing: border-box; }
     body { margin: 0; font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f4f6f8; color: #17202a; }
@@ -33,7 +33,7 @@
 </head>
 <body>
 <header>
-  <strong>DietBot Admin</strong>
+  <strong>Hair Assistant Admin</strong>
   {% if request.url.path.startswith('/admin') and request.url.path != '/admin/login' %}
   <form action="/admin/logout" method="post">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

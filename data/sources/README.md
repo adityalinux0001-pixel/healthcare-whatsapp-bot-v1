@@ -1,21 +1,13 @@
-# Knowledge-base sources
+# Hair & Scalp knowledge sources
 
-## Authoritative diet
-- `../raw/DGI_2024.pdf` — ICMR-NIN Dietary Guidelines for Indians 2024. Use as the primary diet-guidance source after confirming permission for electronic/product use.
+The runtime knowledge base is intentionally limited to paraphrased, topic-based summaries in `external/hair_loss_guidelines.json`, grounded in the public guidance linked in that file from the American Academy of Dermatology (AAD) and NHS.
 
-## Authoritative exercise
-- `external/exercise_guidelines.json` — compact retrieval summary sourced from WHO and CDC official guidance; URLs are stored with the facts.
+User onboarding answers and conversation content are stored in PostgreSQL and must never be indexed into ChromaDB. The bundled source file is a compact retrieval aid, not a substitute for reading the linked guidance or clinical review. Verify source URLs and terms periodically before commercial use.
 
-## Candidate authoritative sources (not bundled as KB evidence yet)
-- Indian Food Composition Tables (IFCT) 2017 — useful for future food-level nutrient calculations, but do not reproduce/bundle until usage terms are cleared.
-- ICMR-NIN RDA/EAR material — useful for nutrient requirement calculations after permission/clinical review.
+## Rebuild
 
-## Supporting datasets
-- `personalized_diet_recommendations.csv` and `diet_recommendations.csv` can be explicitly included with `--include-supporting` for non-clinical menu/personalization examples.
-- `food_behavior_survey.csv` and `def_survey_responses.csv` are never indexed by the builder. They are survey/behavior data, not health evidence.
-
-## Build
 ```bash
 python scripts/build_knowledge_base.py --replace
 ```
-The manifest records file hashes, source role, authority, provenance and indexing counts.
+
+`--replace` clears the existing Chroma collection and rebuilds it with hair/scalp material only. Back up any persistent Chroma directory before running this command.

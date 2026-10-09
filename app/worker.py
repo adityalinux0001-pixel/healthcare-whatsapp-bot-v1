@@ -1,4 +1,4 @@
-"""ARQ worker for conversations, payments and daily plan delivery."""
+"""ARQ worker for Hair & Scalp conversations and subscription payments."""
 from __future__ import annotations
 
 from arq import cron
@@ -30,9 +30,9 @@ async def process_incoming_message(
 
 
 async def process_payment_success(ctx, phone_number: str, amount_inr: float, payment_id: str, link_id: str) -> None:
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timezone
     from sqlalchemy import select
-    from app.models import User, Subscription, DietPlan
+    from app.models import User, Subscription
     from app.services.subscription_service import mark_link_paid
     from app.whatsapp.client import send_text_message
 
@@ -51,100 +51,139 @@ async def process_payment_success(ctx, phone_number: str, amount_inr: float, pay
         )
         created = False
         if not existing:
-            latest_end = await db.scalar(
-                select(Subscription.end_date)
-                .where(Subscription.user_id == user.id)
-                .order_by(Subscription.end_date.desc())
-                .limit(1)
-            )
-            start_date = max(now, latest_end) if latest_end else now
+            # Every newly purchased term starts on its first successfully sent
+            # routine, not the payment timestamp. If the user already has an
+            # active period, this paid term remains queued as pending until it is
+            # next in line; get_paid_subscription prefers active, then oldest pending.
             db.add(Subscription(
                 user_id=user.id,
                 razorpay_payment_id=payment_id,
                 amount_inr=amount_inr,
-                start_date=start_date,
-                end_date=start_date + timedelta(days=settings.subscription_days),
-                status="active",
+                start_date=None,
+                end_date=None,
+                term_days=settings.subscription_days,
+                status="pending",
             ))
             await db.commit()
             created = True
 
         await mark_link_paid(db, link_id, payment_id, phone_number)
 
-        if created and not user.onboarding_complete:
-            # Backward-compatible handling for any payment that was initiated before
-            # onboarding was completed: keep the existing onboarding continuation.
-            from app.services.onboarding_extract import ONBOARDING_ORDER, QUESTIONS
-
-            await send_text_message(
-                phone_number,
-                "✅ Payment received! Your plan is now active.\n\n"
-                f"{QUESTIONS[ONBOARDING_ORDER[0]]}",
+        if user.hair_onboarding_complete:
+            from app.services.hair_care_plan_service import routine_eligibility_block_reason
+            from app.services.launch_mode import (
+                HAIR_CARE_LAUNCH_HOLD_NOTICE, routine_unavailable_notice,
             )
-        elif user.onboarding_complete:
-            # First-time paid users need their first plan immediately. Existing users
-            # receive the next plan from the normal 06:00 IST daily cron instead.
-            existing_plan = await db.scalar(
-                select(DietPlan.id)
-                .where(DietPlan.user_id == user.id)
-                .limit(1)
+            eligibility_reason = routine_eligibility_block_reason(
+                age=user.age,
+                medical_conditions=user.medical_conditions,
+                hair_onboarding_complete=user.hair_onboarding_complete,
             )
-
-            if existing_plan is None:
-                from app.redis_client import get_arq_pool
-
-                pool = await get_arq_pool()
-                await pool.enqueue_job("generate_diet_plan_for_user", user.id, True)
+            if settings.hair_care_launch_hold:
                 message = (
-                    "✅ Payment received! Your plan is now active.\n\n"
-                    "Your first personalized diet and exercise plan is being prepared. 🌿"
+                    HAIR_CARE_LAUNCH_HOLD_NOTICE
+                    if eligibility_reason is None
+                    else routine_unavailable_notice(eligibility_reason)
+                )
+                await send_text_message(phone_number, message)
+                logger.info(
+                    "payment_confirmed_launch_hold", user_id=user.id,
+                    routine_eligible=eligibility_reason is None,
                 )
             else:
                 message = (
-                    "✅ Payment received! Your plan is now active.\n\n"
-                    "Your next personalized diet and exercise plan will be sent at 6:00 AM IST. 🌿"
+                    "✅ Payment received. Your paid plan period starts when the first daily hair-care routine under that period is successfully sent—not on the payment date. If you already have a running subscription, this paid period stays queued until it is next in line.\n\n"
+                    + (
+                        "Your first routine is being prepared. "
+                        if eligibility_reason is None else
+                        "We can't safely prepare an automated personalized routine for this profile right now. Your subscription period has not started; please contact our support team to discuss next steps. "
+                        if eligibility_reason == "high_risk_profile" else
+                        "Automated daily routines are currently available only for users aged 12–75. Your subscription period has not started; please contact our support team to discuss next steps. "
+                    )
+                    + "Our service provides general information and does not diagnose or prescribe treatment."
                 )
+                await send_text_message(phone_number, message)
+                if eligibility_reason is None:
+                    from app.redis_client import get_arq_pool
+                    from datetime import datetime
+                    pool = await get_arq_pool()
+                    local_date = datetime.now(IST).date().isoformat()
+                    await pool.enqueue_job(
+                        "generate_hair_care_plan_for_user", user.id,
+                        _job_id=f"hair_resume:{user.id}:{local_date}:payment",
+                    )
+        else:
+            from app.services.onboarding_extract import ONBOARDING_ORDER, QUESTIONS
+            from app.knowledge.safety import consent_request_message
 
+            if settings.require_health_consent and user.health_data_consent_at is None:
+                message = (
+                    "✅ Payment received. Your paid plan period starts when the first daily hair-care routine under that period is successfully sent—not on the payment date. If you already have a running subscription, this paid period stays queued until it is next in line.\n\n"
+                    + consent_request_message()
+                )
+            else:
+                message = (
+                    "✅ Payment received. Your paid plan period starts when the first daily hair-care routine under that period is successfully sent—not on the payment date. If you already have a running subscription, this paid period stays queued until it is next in line.\n\n"
+                    f"{QUESTIONS[ONBOARDING_ORDER[0]]}"
+                )
             await send_text_message(phone_number, message)
     logger.info("payment_success_processed", phone=mask_identifier(phone_number), payment_id=mask_identifier(payment_id))
 
 
 async def generate_diet_plan_for_user(ctx, user_id: int, prefer_text: bool = False) -> None:
-    from app.services.diet_plan_service import generate_plan_for_user
+    # Keep this old queue handler registered during rolling deployments so any
+    # delayed Redis job is acknowledged safely without creating a diet plan.
+    logger.warning("legacy_diet_plan_job_skipped_hair_assistant", user_id=user_id)
+
+
+async def daily_diet_plan_job(ctx) -> None:
+    # Compatibility no-op if an old scheduler entry survives a deployment.
+    logger.info("legacy_daily_diet_plan_scheduler_disabled")
+
+
+async def generate_hair_care_plan_for_user(ctx, user_id: int) -> None:
+    if settings.hair_care_launch_hold:
+        logger.info("hair_care_launch_hold_plan_job_skipped", user_id=user_id)
+        return
+    from app.services.hair_care_plan_service import generate_plan_for_user
     from app.llm.gemini_client import PlanGenerationValidationError
     from app.knowledge.store import KnowledgeBaseNotReady
 
     job_try = ctx.get("job_try", 1)
     max_tries = WorkerSettings.max_tries
-
     try:
-        await generate_plan_for_user(user_id, prefer_text=prefer_text)
-    except PlanGenerationValidationError as exc:
+        await generate_plan_for_user(user_id)
+    except (PlanGenerationValidationError, KnowledgeBaseNotReady) as exc:
         logger.error(
-            "generate_diet_plan_validation_failed",
-            user_id=user_id,
-            job_try=job_try,
-            problems=exc.problems[:20],
+            "generate_hair_care_plan_retryable_failure",
+            user_id=user_id, job_try=job_try, error_type=type(exc).__name__,
         )
         if job_try < max_tries:
             raise Retry(defer=60 * job_try)
         raise
     except Exception as exc:
         logger.exception(
-            "generate_diet_plan_failed",
-            user_id=user_id,
-            job_try=job_try,
-            error_type=type(exc).__name__,
+            "generate_hair_care_plan_failed",
+            user_id=user_id, job_try=job_try, error_type=type(exc).__name__,
         )
-        # ARQ only retries when Retry is raised; a plain exception fails the job for good.
         if job_try < max_tries:
             raise Retry(defer=30 * job_try)
         raise
 
 
-async def daily_diet_plan_job(ctx) -> None:
-    from app.services.diet_plan_service import generate_and_send_daily_plans
+async def daily_hair_care_plan_job(ctx) -> None:
+    if settings.hair_care_launch_hold:
+        logger.info("hair_care_launch_hold_daily_scheduler_skipped")
+        return
+    from app.services.hair_care_plan_service import generate_and_send_daily_plans
     await generate_and_send_daily_plans()
+
+
+async def retry_hair_care_checkins_job(ctx) -> None:
+    if settings.hair_care_launch_hold:
+        return
+    from app.services.hair_care_plan_service import retry_pending_checkin_prompts
+    await retry_pending_checkin_prompts()
 
 
 async def subscription_reminder_job(ctx) -> None:
@@ -183,11 +222,18 @@ class WorkerSettings:
     functions = [
         process_incoming_message,
         process_payment_success,
-        generate_diet_plan_for_user,
+        generate_diet_plan_for_user,  # compatibility for delayed legacy ARQ jobs; service is a safe no-op
+        daily_diet_plan_job,           # compatibility for a legacy cron job already queued in Redis
+        generate_hair_care_plan_for_user,
     ]
     cron_jobs = [
         cron(worker_heartbeat_job, minute=set(range(60))),
-        cron(daily_diet_plan_job, hour=6, minute=0),
+        # Daily hair-care routine: service checks subscription, adult age, local day,
+        # idempotency and check-in gate. Generation occurs at 06:00; delivery waits
+        # for an open WhatsApp customer-service window if needed.
+        cron(daily_hair_care_plan_job, hour=6, minute=0),
+        # Retry definite check-in prompt failures, never ambiguous provider outcomes.
+        cron(retry_hair_care_checkins_job, minute=set(range(0, 60, 15))),
         cron(subscription_reminder_job, hour=10, minute=0),
     ]
     on_startup = startup

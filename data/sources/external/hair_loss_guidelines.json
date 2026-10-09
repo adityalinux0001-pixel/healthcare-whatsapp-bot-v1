@@ -1,0 +1,77 @@
+{
+  "source_name": "Hair and Scalp Health Guidance Summaries",
+  "source_type": "official_guidance_summary",
+  "authority": 0.98,
+  "sources": [
+    {
+      "topic": "common_causes_and_shedding",
+      "facts": [
+        "Hair shedding and hair loss have many possible causes; a chat questionnaire cannot determine the cause for an individual.",
+        "The American Academy of Dermatology describes hereditary or pattern hair loss as a common cause, but other causes include illness, high fever, surgery, postpartum changes, some medicines, scalp infections such as ringworm, alopecia areata, and hair-care practices that damage hair.",
+        "Losing roughly 50 to 100 hairs each day can be normal. Noticeable thinning, a widening part, a receding hairline, bald spots, or a persistent increase in shedding should be assessed in context.",
+        "The timing and pattern of loss, scalp appearance, family history, medicines, recent illness or stressors, and examination can help a clinician distinguish different causes. Family history may be relevant but does not prove the cause for one person."
+      ],
+      "source_urls": [
+        "https://www.aad.org/public/diseases/hair-loss/causes/18-causes",
+        "https://www.aad.org/public/diseases/hair-loss/causes/fall-out"
+      ]
+    },
+    {
+      "topic": "gentle_hair_and_scalp_care",
+      "facts": [
+        "Hair that is thinning or shedding can be fragile. Gentle shampooing, conditioning after washing, careful detangling, and reducing harsh heat or chemical processing can reduce breakage and damage.",
+        "Repeated tension from tight ponytails, braids, extensions, or other pulling hairstyles can cause traction alopecia and may cause permanent loss if continued. A painful tight hairstyle should be loosened.",
+        "There is no single shampooing frequency that is right for everyone. Washing frequency should consider scalp oiliness, sweat, hair texture, styling products, irritation, and personal needs. Washing habits alone do not establish the cause of hair loss.",
+        "Water hardness by itself should not be treated as a confirmed diagnosis or assumed cause of an individual's hair loss. Do not recommend expensive water treatments as a proven cure without reliable evidence for the specific problem."
+      ],
+      "source_urls": [
+        "https://www.aad.org/public/diseases/hair-loss/treatment/tips",
+        "https://www.aad.org/public/diseases/hair-loss/causes/hairstyles",
+        "https://www.aad.org/public/diseases/hair-loss/causes/fall-out"
+      ]
+    },
+    {
+      "topic": "nutrition_and_supplements",
+      "facts": [
+        "Not getting enough protein or certain nutrients such as iron, zinc, or biotin can contribute to hair problems in some people, but a reported intake category does not prove a deficiency.",
+        "Eating too few calories can contribute to significant shedding. A varied, adequate diet is preferable to crash dieting.",
+        "Too much of some nutrients, including selenium and vitamins A or E, has been associated with hair loss. Do not recommend high-dose supplements as a default hair-growth treatment.",
+        "Testing and clinical assessment may be appropriate when a deficiency or another medical cause is suspected. Supplements should be guided by a qualified clinician and documented need rather than a questionnaire alone.",
+        "The amount of sugary food or dairy reported in onboarding does not by itself diagnose a cause of hair loss. Do not infer that sugar or dairy is the cause or prescribe restrictive diets based only on these answers."
+      ],
+      "source_urls": [
+        "https://www.aad.org/public/diseases/hair-loss/treatment/tips",
+        "https://www.aad.org/public/diseases/hair-loss/treatment/diagnosis-treat"
+      ]
+    },
+    {
+      "topic": "when_to_seek_professional_assessment",
+      "facts": [
+        "A dermatologist can assess the cause of hair loss; early evaluation may improve the chance of choosing an appropriate treatment.",
+        "Seek prompt medical assessment for sudden, rapid, patchy hair loss, hair coming out in clumps, loss involving eyebrows or eyelashes, painful or burning scalp, scalp swelling, sores, pus, bleeding, or areas that look shiny or scarred.",
+        "A clinician may examine the scalp and hair and, when appropriate, consider blood tests or other investigations for possible medical conditions, nutrient deficiencies, thyroid problems, or infection.",
+        "Different hair-loss conditions need different approaches. The assistant must not diagnose a condition, guarantee regrowth, or recommend prescription medicines without clinician assessment. Severe or rapidly worsening symptoms need timely medical care."
+      ],
+      "source_urls": [
+        "https://www.aad.org/public/diseases/hair-loss/causes/18-causes",
+        "https://www.aad.org/public/diseases/hair-loss/treatment/diagnosis-treat",
+        "https://www.aad.org/public/diseases/hair-loss/causes/hairstyles",
+        "https://www.nhs.uk/conditions/hair-loss/"
+      ]
+    },
+    {
+      "topic": "limits_of_onboarding_answers",
+      "facts": [
+        "Age, city, hair-washing frequency, water type, height, weight, sugary-food and drink intake, family history, and dairy intake are context only; these answers are not enough to diagnose the cause of hair loss.",
+        "Family history can be one clue but is not diagnostic. Water hardness, shampoo frequency, sugary-food intake, and dairy intake should not independently be labeled as the cause of an individual's hair loss.",
+        "Sexual activity is sensitive information and is not, by itself, a diagnosis or established explanation for hair loss. Do not repeat it or use it for routine personalization unless the user explicitly asks about that saved answer and the response is directly relevant.",
+        "For persistent or concerning hair loss, explain uncertainty and recommend assessment by a qualified dermatologist rather than guessing from onboarding answers."
+      ],
+      "source_urls": [
+        "https://www.aad.org/public/diseases/hair-loss/causes/18-causes",
+        "https://www.aad.org/public/diseases/hair-loss/treatment/diagnosis-treat",
+        "https://www.nhs.uk/conditions/hair-loss/"
+      ]
+    }
+  ]
+}

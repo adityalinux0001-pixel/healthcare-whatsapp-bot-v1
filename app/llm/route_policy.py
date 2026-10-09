@@ -4,17 +4,9 @@ from app.llm.conversation_schemas import ConversationRoute
 
 
 def normalize_conversation_route(route: ConversationRoute) -> ConversationRoute:
-  
-    if route.intent == "saved_plan_retrieval" and route.plan_reference == "none":
-        return route.model_copy(update={
-            "intent": "general_health",
-            "grounding_required": True,
-            "plan_reference": "none",
-            "plan_day_number": None,
-            "plan_date": None,
-            "plan_scope": "none",
-            "plan_section": None,
-        })
+    # Saved hair-care routines are handled deterministically by the application.
+    # Do not downgrade these intents to general QA: that would bypass saved-plan
+    # retrieval and revision after the diet-to-hair product transition.
 
     # A profile recall without fields cannot be executed deterministically.
     if route.intent == "profile_recall" and not route.profile_fields:

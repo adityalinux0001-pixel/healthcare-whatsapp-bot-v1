@@ -36,6 +36,27 @@ async def get_active_subscription(db: AsyncSession, user: User) -> Subscription 
     return None
 
 
+async def get_paid_subscription(db: AsyncSession, user: User) -> Subscription | None:
+    """Return an active entitlement or a paid subscription awaiting first delivery.
+
+    A pending row is created only by a verified payment-success job. Its term clock
+    does not start until the first hair-care routine is successfully sent.
+    """
+    active = await get_active_subscription(db, user)
+    if active:
+        return active
+
+    return await db.scalar(
+        select(Subscription)
+        .where(
+            Subscription.user_id == user.id,
+            Subscription.status == "pending",
+            Subscription.razorpay_payment_id.is_not(None),
+        )
+        .order_by(Subscription.created_at.asc(), Subscription.id.asc())
+    )
+
+
 async def _get_or_create_dev_bypass_subscription(
     db: AsyncSession, user: User, now: datetime
 ) -> Subscription:
@@ -45,8 +66,10 @@ async def _get_or_create_dev_bypass_subscription(
         select(Subscription).where(Subscription.razorpay_payment_id == payment_id)
     )
     if existing:
-        if existing.end_date <= now:
+        if existing.end_date is None or existing.end_date <= now:
+            existing.start_date = now
             existing.end_date = now + timedelta(days=settings.subscription_days)
+            existing.term_days = settings.subscription_days
             existing.status = "active"
             await db.commit()
         return existing
@@ -57,6 +80,7 @@ async def _get_or_create_dev_bypass_subscription(
         amount_inr=0,
         start_date=now,
         end_date=now + timedelta(days=settings.subscription_days),
+        term_days=settings.subscription_days,
         status="active",
     )
     db.add(sub)
@@ -112,11 +136,12 @@ async def prompt_payment(db: AsyncSession, user: User) -> None:
 
 def _payment_message(url: str) -> str:
     return (
-        f"Hello! I am your AI Health Assistant. 🌿\n\n"
-        f"Subscribe to the {settings.subscription_days}-day plan to get started "
+        f"Hello! I'm your Hair & Scalp Assistant. 🌿\n\n"
+        f"Subscribe for {settings.subscription_days} days of hair- and scalp-health guidance "
         f"— ₹{settings.subscription_price_inr} only:\n\n"
         f"{url}\n\n"
-        f"Once payment is completed, we can get started right away!"
+        "Your paid period starts when the first daily hair-care routine under that period is successfully sent, "
+        "not on the payment date. If you already have a running subscription, this paid period stays queued until it is next in line."
     )
 
 

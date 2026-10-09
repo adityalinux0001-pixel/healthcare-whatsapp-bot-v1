@@ -19,34 +19,36 @@ class User(Base):
 
     name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     age: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    gender: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # Hair-loss onboarding profile. New columns are nullable to preserve every
+    # existing production row during the product-domain transition.
+    city: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    hair_wash_frequency: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    water_hardness: Mapped[str | None] = mapped_column(String(40), nullable=True)
     height_cm: Mapped[float | None] = mapped_column(Float, nullable=True)
     weight_kg: Mapped[float | None] = mapped_column(Float, nullable=True)
+    sugary_food_drink_intake: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    # Sensitive answer: stored only when explicitly collected from adults and
+    # omitted from model context unless the user explicitly asks to recall it.
+    sexually_active: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    family_hair_loss: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    family_hair_loss_relation: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    dairy_intake: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    hair_onboarding_complete: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+
+    # Legacy weight-loss profile columns retained for compatibility/admin/history.
+    # Hair assistant prompts do not use these fields for personalization.
+    gender: Mapped[str | None] = mapped_column(String(20), nullable=True)
     activity_level: Mapped[str | None] = mapped_column(String(30), nullable=True)
     goal: Mapped[str | None] = mapped_column(String(30), nullable=True)
     diet_preference: Mapped[str | None] = mapped_column(String(30), nullable=True)
-    # FIX: allergies + medical_conditions are now part of onboarding required flow
-    # (not hard-required in DB so NULL = "none reported", but bot always asks)
+    # Legacy health fields are retained for existing profiles and safety context.
+    # The hair-specific onboarding does not treat NULL as a user-declared answer.
     allergies: Mapped[str | None] = mapped_column(Text, nullable=True)
     medical_conditions: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # FIX: dedicated structured field for food dislikes/likes — previously these
-    # only lived inside conversation_summary (regenerated every 20 messages) or
-    # the 8-message rolling window, so an early "I don't like paneer" could be
-    # forgotten or even hallucinated over later in the chat. Now it's a durable
-    # DB column, updated the same turn it's mentioned, and injected into every
-    # prompt (onboarding, general Q&A, diet plan) every single time.
+    # Legacy field retained so existing profiles and historical data are not lost.
     food_dislikes: Mapped[str | None] = mapped_column(Text, nullable=True)
-
-    # Hair-loss onboarding profile. These are nullable for backward compatibility
-    # with existing production users and older rows.
-    city: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    hair_wash_frequency: Mapped[str | None] = mapped_column(String(30), nullable=True)
-    water_hardness: Mapped[str | None] = mapped_column(String(30), nullable=True)
-    sugary_food_drink_frequency: Mapped[str | None] = mapped_column(String(30), nullable=True)
-    sexually_active: Mapped[str | None] = mapped_column(String(30), nullable=True)
-    family_hair_loss: Mapped[str | None] = mapped_column(String(30), nullable=True)
-    family_hair_loss_relation: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    dairy_intake: Mapped[str | None] = mapped_column(String(30), nullable=True)
 
     onboarding_complete: Mapped[bool] = mapped_column(Boolean, default=False)
     # Explicit consent for storing/processing health-related profile information.
@@ -70,54 +72,69 @@ class User(Base):
     subscriptions: Mapped[list["Subscription"]] = relationship(back_populates="user")
     messages: Mapped[list["Message"]] = relationship(back_populates="user")
     diet_plans: Mapped[list["DietPlan"]] = relationship(back_populates="user")
+    hair_care_plans: Mapped[list["HairCarePlan"]] = relationship(back_populates="user")
     payment_links: Mapped[list["PaymentLink"]] = relationship(back_populates="user")
 
-    # Legacy allergy/medical fields remain available for existing users and
-    # downstream safety logic, but they are no longer part of this onboarding flow.
-    # NOTE: onboarding no longer collects "name" — the column stays (nullable,
-    # unused going forward) only so existing rows and the admin panel keep working.
-    # New hair-loss onboarding. Legacy profile columns stay in the model so
-    # existing users/data and downstream services remain backward-compatible.
+    # Hair-focused onboarding requirements. Family relation is conditional and is
+    # only required when the user answers that hair loss runs in the family.
     REQUIRED_FIELDS = [
-        "age", "city",
-        "hair_wash_frequency", "water_hardness",
-        "height_cm", "weight_kg",
-        "sugary_food_drink_frequency",
-        "sexually_active",
-        "family_hair_loss",
-        "dairy_intake",
+        "age", "city", "hair_wash_frequency", "water_hardness",
+        "height_cm", "weight_kg", "sugary_food_drink_intake",
+        "family_hair_loss", "dairy_intake",
     ]
 
-    def profile_dict(self) -> dict:
-        return {
-            # Legacy fields retained for backward compatibility with existing
-            # plans/conversations.
-            "name": self.name, "age": self.age, "gender": self.gender,
-            "height_cm": self.height_cm, "weight_kg": self.weight_kg,
-            "activity_level": self.activity_level, "goal": self.goal,
-            "diet_preference": self.diet_preference,
-            "allergies": self.allergies or "None reported",
-            "medical_conditions": self.medical_conditions or "None reported",
-            "food_dislikes": self.food_dislikes or "None reported",
-            # Hair-loss onboarding fields.
+    def profile_dict(
+        self, *, include_sensitive: bool = False, include_legacy: bool = False
+    ) -> dict:
+        """Return a hair-focused profile; protect sensitive/legacy values by default."""
+        profile = {
+            "age": self.age,
             "city": self.city,
+            "height_cm": self.height_cm,
+            "weight_kg": self.weight_kg,
             "hair_wash_frequency": self.hair_wash_frequency,
             "water_hardness": self.water_hardness,
-            "sugary_food_drink_frequency": self.sugary_food_drink_frequency,
-            "sexually_active": self.sexually_active,
+            "sugary_food_drink_intake": self.sugary_food_drink_intake,
             "family_hair_loss": self.family_hair_loss,
             "family_hair_loss_relation": self.family_hair_loss_relation,
             "dairy_intake": self.dairy_intake,
         }
+        # Do not turn unanswered legacy questions into a claim that the user has
+        # explicitly reported no allergies/medical conditions.
+        if self.allergies:
+            profile["allergies"] = self.allergies
+        if self.medical_conditions:
+            profile["medical_conditions"] = self.medical_conditions
+        if include_sensitive:
+            profile["sexually_active"] = self.sexually_active
+        if include_legacy:
+            profile.update({
+                "name": self.name,
+                "gender": self.gender,
+                "activity_level": self.activity_level,
+                "goal": self.goal,
+                "diet_preference": self.diet_preference,
+                "food_dislikes": self.food_dislikes,
+            })
+        return profile
 
     def missing_fields(self) -> list[str]:
         missing = [f for f in self.REQUIRED_FIELDS if getattr(self, f) in (None, "")]
-        # Family relation is only relevant when the user answered YES to family
-        # hair loss. It is intentionally conditional rather than a separate
-        # top-level question for users who answered NO / NOT SURE.
-        if self.family_hair_loss == "yes" and not self.family_hair_loss_relation:
+        # Do not solicit sexual-activity information from minors.
+        if self.age is not None and self.age >= 18 and self.sexually_active in (None, ""):
+            missing.append("sexually_active")
+        # Keep family history and its optional details together in the conversation.
+        if self.family_hair_loss == "yes" and self.family_hair_loss_relation in (None, ""):
             missing.append("family_hair_loss_relation")
-        return missing
+        # Restore requested order: sexual-activity question before family history;
+        # relation (if needed) is immediately after family history, before dairy.
+        order = [
+            "age", "city", "hair_wash_frequency", "water_hardness", "height_cm",
+            "weight_kg", "sugary_food_drink_intake", "sexually_active",
+            "family_hair_loss", "family_hair_loss_relation", "dairy_intake",
+        ]
+        return [field for field in order if field in missing]
+
 
 
 class Subscription(Base):
@@ -131,9 +148,13 @@ class Subscription(Base):
         String(100), unique=True, nullable=True, index=True
     )
     amount_inr: Mapped[float] = mapped_column(Float)
-    start_date: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    end_date: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    status: Mapped[str] = mapped_column(String(20), default="active")  # active, expired
+    # Paid first-time subscriptions stay pending with NULL dates until the first
+    # hair-care routine is successfully delivered. This prevents launch-prep days
+    # from consuming the user's paid term.
+    start_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    end_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    term_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="active")  # pending, active, expired
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     user: Mapped["User"] = relationship(back_populates="subscriptions")
@@ -213,6 +234,56 @@ class DietPlan(Base):
     )
 
     user: Mapped["User"] = relationship(back_populates="diet_plans")
+    subscription: Mapped["Subscription | None"] = relationship()
+
+
+class HairCarePlan(Base):
+    """Generated daily non-medical hair-care routines, separate from legacy diet plans."""
+    __tablename__ = "hair_care_plans"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    subscription_id: Mapped[int | None] = mapped_column(
+        ForeignKey("subscriptions.id"), nullable=True, index=True
+    )
+    plan_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    day_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    content: Mapped[str] = mapped_column(Text, default="", server_default="")
+    # Lifecycle: generating, pending, sending, sent, awaiting_window, failed, unknown.
+    delivery_status: Mapped[str] = mapped_column(
+        String(24), default="generating", server_default="generating", nullable=False
+    )
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    send_attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    last_send_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_send_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    provider_message_id: Mapped[str | None] = mapped_column(String(150), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_modification_instruction: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_modified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    checkin_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    checkin_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    checkin_responded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    checkin_prompt_status: Mapped[str] = mapped_column(
+        String(20), default="not_sent", server_default="not_sent", nullable=False
+    )
+    checkin_prompt_attempts: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    checkin_prompt_last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "plan_date", name="uq_hair_care_plan_user_date"),
+        UniqueConstraint("user_id", "day_number", name="uq_hair_care_plan_user_day"),
+        Index("ix_hair_care_plan_user_date", "user_id", "plan_date"),
+        Index("ix_hair_care_plan_user_day", "user_id", "day_number"),
+        Index(
+            "ix_hair_care_plan_checkin_retry",
+            "delivery_status", "checkin_status", "checkin_prompt_status", "checkin_sent_at",
+        ),
+    )
+
+    user: Mapped["User"] = relationship(back_populates="hair_care_plans")
     subscription: Mapped["Subscription | None"] = relationship()
 
 

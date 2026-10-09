@@ -7,12 +7,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import User, Message
 from app.config import settings
-from app.services.subscription_service import get_active_subscription, prompt_payment
+from app.services.subscription_service import get_paid_subscription, prompt_payment
 from app.llm.gemini_client import run_general_qa, update_conversation_summary
 from app.llm.context import build_response_context
 from app.knowledge.safety import (
     consent_request_message, consent_declined_message, detect_red_flag, emergency_response,
-    detect_high_risk_profile, high_risk_profile_message,
+    detect_hair_concern, hair_concern_response,
 )
 from app.whatsapp.client import send_text_message
 from app.redis_client import redis_client
@@ -56,7 +56,24 @@ async def _recent_history(db: AsyncSession, user: User, exclude_whatsapp_message
         query.order_by(Message.created_at.desc()).limit(HISTORY_LIMIT)
     )
     rows = list(reversed(result.scalars().all()))
-    return [{"role": m.role, "content": m.content} for m in rows]
+    # Never pass the optional sexual-activity question/answer into ordinary model
+    # context or long-term summary. The full message remains in the user's own
+    # history for data retention; its content is redacted only at the LLM boundary.
+    history: list[dict] = []
+    redact_sensitive_answer = False
+    for message in rows:
+        content = message.content or ""
+        if message.role == "assistant" and "currently sexually active" in content.casefold():
+            history.append({"role": message.role, "content": "[Optional sensitive profile question omitted from AI context.]"})
+            redact_sensitive_answer = True
+            continue
+        if redact_sensitive_answer and message.role == "user":
+            history.append({"role": message.role, "content": "[Optional sensitive profile answer omitted from AI context.]"})
+            redact_sensitive_answer = False
+            continue
+        redact_sensitive_answer = False
+        history.append({"role": message.role, "content": content})
+    return history
 
 
 async def _user_message_count(db: AsyncSession, user: User) -> int:
@@ -174,19 +191,9 @@ async def handle_incoming_message(
         #
         # Safety/red-flag handling above intentionally remains available regardless of
         # payment status so genuine emergency messages still receive a safety response.
-        if user.onboarding_complete:
-            subscription = await get_active_subscription(db, user)
+        if user.hair_onboarding_complete:
+            subscription = await get_paid_subscription(db, user)
             if not subscription:
-                high_risk = detect_high_risk_profile(user.profile_dict())
-                if high_risk:
-                    logger.warning(
-                        "payment_prompt_blocked_high_risk_profile",
-                        user_id=user.id,
-                        phone=mask_identifier(phone),
-                        reason=high_risk,
-                    )
-                    await send_text_message(phone, high_risk_profile_message())
-                    return
                 await prompt_payment(db, user)
                 logger.info(
                     "conversation_payment_required",
@@ -195,10 +202,46 @@ async def handle_incoming_message(
                 )
                 return
 
+            # During the temporary pre-launch hold, only onboarding, payment, and
+            # emergency triage are active. Do not route paid users' messages to
+            # Gemini, RAG, acknowledgements, check-ins, or plan-resume logic.
+            # Store a redacted placeholder with the WhatsApp message ID so webhook
+            # retries remain idempotent without retaining unhandled health questions.
+            if settings.hair_care_launch_hold:
+                from app.services.launch_mode import HAIR_CARE_LAUNCH_HOLD_STANDBY_REPLY
+                db.add(Message(
+                    user_id=user.id,
+                    role="user",
+                    content="[Message received during pre-launch hold; not processed]",
+                    whatsapp_message_id=wa_message_id,
+                ))
+                db.add(Message(user_id=user.id, role="assistant", content=HAIR_CARE_LAUNCH_HOLD_STANDBY_REPLY))
+                await db.commit()
+                await send_text_message(phone, HAIR_CARE_LAUNCH_HOLD_STANDBY_REPLY)
+                logger.info("hair_care_launch_hold_message_not_processed", user_id=user.id)
+                return
+
+            # Once the service is launched, route high-concern symptoms to the
+            # deterministic safety message before any model-generated answer.
+            hair_concern = detect_hair_concern(text)
+            if hair_concern:
+                await send_text_message(phone, hair_concern_response(hair_concern))
+                return
+
+        stored_user_text = text
+        if (
+            not user.hair_onboarding_complete
+            and user.age is not None and user.age >= 18
+            and user.missing_fields()
+            and user.missing_fields()[0] == "sexually_active"
+        ):
+            # The structured field retains the answer for explicit profile recall,
+            # but routine chat history and LLM context never store the raw response.
+            stored_user_text = "[Optional sensitive profile answer supplied]"
         db.add(Message(
             user_id=user.id,
             role="user",
-            content=text,
+            content=stored_user_text,
             whatsapp_message_id=wa_message_id,
         ))
         await db.commit()
@@ -213,9 +256,9 @@ async def handle_incoming_message(
             return
 
         history = await _recent_history(db, user, exclude_whatsapp_message_id=wa_message_id)
-        summary = user.conversation_summary
+        summary = user.conversation_summary if user.hair_onboarding_complete else None
 
-        if not user.onboarding_complete:
+        if not user.hair_onboarding_complete:
             await _handle_onboarding(db, user, phone, text, history, summary)
         else:
             handled_checkin = await _try_text_checkin_answer(db, user, phone, text)
@@ -237,7 +280,7 @@ async def handle_incoming_message(
 
         # FIX: Update long-term summary every N messages (background, non-blocking)
         msg_count = await _user_message_count(db, user)
-        if msg_count > 0 and msg_count % SUMMARY_EVERY_N == 0:
+        if user.hair_onboarding_complete and msg_count > 0 and msg_count % SUMMARY_EVERY_N == 0:
             all_recent = await _recent_history(db, user)
             new_summary = await update_conversation_summary(summary, all_recent)
             user.conversation_summary = new_summary
@@ -255,107 +298,117 @@ async def handle_incoming_message(
 
 
 _CHECKIN_ACK = {
-    "done": "Awesome, great job! 💪 Day {n} marked as done.",
-    "not_done": "No worries — every day is a fresh start! 🌿 Day {n} marked as not done.",
-    "skip": "Okay, Day {n} skipped. ⏭️",
+    "done": "Great, thanks! 🌿 Day {n} hair-care routine marked as tried.",
+    "not_done": "No worries — every day is a fresh start. Day {n} marked as not tried.",
+    "skip": "Okay, Day {n} check-in skipped. ⏭️",
 }
 
 
-async def _enqueue_plan_resume(user: User) -> None:
+async def _enqueue_plan_resume(user: User, *, source_id: str | int | None = None) -> None:
+    if settings.hair_care_launch_hold:
+        logger.info("hair_care_launch_hold_enqueue_skipped", user_id=user.id)
+        return
     from app.redis_client import get_arq_pool
 
     pool = await get_arq_pool()
-    # One resume job per user per day is enough; generate_plan_for_user is idempotent.
+    local_date = datetime.now(ZoneInfo("Asia/Kolkata")).date().isoformat()
+    job_suffix = str(source_id) if source_id is not None else "daily"
     await pool.enqueue_job(
-        "generate_diet_plan_for_user", user.id, True,
-        _job_id=f"resume_plan:{user.id}:{datetime.now(ZoneInfo('Asia/Kolkata')).date().isoformat()}",
+        "generate_hair_care_plan_for_user", user.id,
+        _job_id=f"hair_resume:{user.id}:{local_date}:{job_suffix}",
     )
 
 
 async def _continue_plan_flow(db: AsyncSession, user: User, phone: str) -> None:
-    """After a normal chat turn: pick the daily plan flow up where it stopped.
-
-    1. A previous day's check-in is still unanswered -> ask again (rate-limited).
-    2. Otherwise, if a plan is waiting (24h window had closed) or today's plan was
-       held back, deliver/generate it now. Never breaks the main chat flow.
-    """
+    """Resume today's hair-care routine only when the service says it is eligible."""
+    if settings.hair_care_launch_hold or not user.hair_onboarding_complete:
+        return
     try:
-        from app.services import diet_plan_service as dps
-
-        pending = await dps.get_unanswered_prior_day_checkin(db, user.id)
-        if pending:
-            nudge_key = f"checkin_nudge:{pending.id}"
-            if await redis_client.set(nudge_key, "1", nx=True, ex=CHECKIN_NUDGE_COOLDOWN_SECONDS):
-                await dps.send_checkin_prompt(phone, pending.id, pending.day_number, reminder=True)
+        from app.services import hair_care_plan_service as hps
+        if not hps.is_routine_eligible_user(user):
             return
-
-        if await dps.needs_plan_resume(db, user):
+        if await hps.needs_plan_resume(db, user):
             await _enqueue_plan_resume(user)
     except Exception:
-        logger.exception("plan_flow_continue_failed", user_id=user.id, phone=mask_identifier(phone))
+        logger.exception("hair_care_plan_resume_enqueue_failed", user_id=user.id)
 
 
 async def _record_and_reply_checkin(
     db: AsyncSession, user: User, phone: str, plan_id: int, choice: str
 ) -> None:
-    from app.services import diet_plan_service as dps
+    from app.services import hair_care_plan_service as hps
 
-    result, plan = await dps.record_checkin(db, user, plan_id, choice)
+    result, plan = await hps.record_checkin(db, user, plan_id, choice)
     if result == "not_found" or plan is None:
-        logger.info("checkin_plan_not_found", user_id=user.id, plan_id=plan_id)
+        reply = "I couldn't match that check-in to an active hair-care routine. You can ask me for your latest routine. 🌿"
+        db.add(Message(user_id=user.id, role="assistant", content=reply))
+        await db.commit()
+        await send_text_message(phone, reply)
         return
 
     if result == "already":
         reply = "✅ Already noted — thank you!"
         resume = False
     else:
-        resume = False
         try:
-            resume = await dps.needs_plan_resume(db, user)
+            resume = await hps.needs_plan_resume(db, user)
         except Exception:
-            logger.exception("checkin_resume_check_failed", user_id=user.id)
-        tail = (
-            "Preparing your next plan now… 🌿"
-            if resume
-            else "Your next plan will arrive at 6:00 AM IST. 🌿"
-        )
+            resume = False
+            logger.exception("hair_care_checkin_resume_check_failed", user_id=user.id)
+        if settings.hair_care_launch_hold:
+            tail = "Daily hair-care plans are temporarily being prepared for launch. We expect to begin sending them within 2–3 business days. 🌿"
+            resume = False
+        else:
+            tail = (
+                "I'll prepare today's hair-care routine now… 🌿"
+                if resume
+                else "Your next daily hair-care routine is scheduled for 6:00 AM IST. 🌿"
+            )
         reply = f"{_CHECKIN_ACK[choice].format(n=plan.day_number)}\n\n{tail}"
 
     db.add(Message(user_id=user.id, role="assistant", content=reply))
     await db.commit()
     await send_text_message(phone, reply)
 
-    if resume:
+    if result == "recorded" and resume:
         try:
-            await _enqueue_plan_resume(user)
+            await _enqueue_plan_resume(user, source_id=f"checkin-{plan.id}")
         except Exception:
-            logger.exception("checkin_resume_enqueue_failed", user_id=user.id)
-    logger.info("checkin_recorded", user_id=user.id, plan_id=plan_id, choice=choice, result=result)
+            logger.exception("hair_care_checkin_resume_enqueue_failed", user_id=user.id, plan_id=plan.id)
+    logger.info("hair_care_checkin_recorded", user_id=user.id, plan_id=plan_id, choice=choice, result=result)
 
 
 async def _handle_button_reply(db: AsyncSession, user: User, phone: str, button_id: str) -> None:
-    from app.services.diet_plan_service import parse_checkin_button_id
+    from app.services.hair_care_plan_service import parse_checkin_button_id
 
     parsed = parse_checkin_button_id(button_id)
-    if not parsed or not user.onboarding_complete:
-        logger.info("button_reply_ignored", user_id=user.id, button_id=button_id[:40])
+    if parsed:
+        plan_id, choice = parsed
+        await _record_and_reply_checkin(db, user, phone, plan_id, choice)
         return
-    plan_id, choice = parsed
-    await _record_and_reply_checkin(db, user, phone, plan_id, choice)
+
+    # Old diet-plan buttons remain non-operative after product migration.
+    if button_id.startswith("chk:"):
+        reply = "That was an old diet-plan check-in and is no longer active. 🌿 Please use the latest hair-care routine check-in."
+    else:
+        reply = "I couldn't recognize that button. Please send your question as a normal message."
+    db.add(Message(user_id=user.id, role="assistant", content=reply))
+    await db.commit()
+    await send_text_message(phone, reply)
 
 
 async def _try_text_checkin_answer(db: AsyncSession, user: User, phone: str, text: str) -> bool:
-    """Accept a typed 'done' / 'not done' / 'skip' while a check-in is pending."""
-    from app.services.diet_plan_service import parse_checkin_text, get_pending_checkin_plan
+    from app.services.hair_care_plan_service import parse_checkin_text, get_pending_checkin_plan
 
-    choice = parse_checkin_text(text)
-    if not choice:
-        return False
     plan = await get_pending_checkin_plan(db, user.id)
     if not plan:
         return False
+    choice = parse_checkin_text(text)
+    if not choice:
+        return False
     await _record_and_reply_checkin(db, user, phone, plan.id, choice)
     return True
+
 
 
 def _apply_extracted_fields(user: User, extracted: dict) -> None:
@@ -373,22 +426,24 @@ def _apply_extracted_fields(user: User, extracted: dict) -> None:
             if merged:
                 setattr(user, field, ", ".join(sorted(merged)))
         else:
+            # Sexual-activity data is not collected from minors even if a stale or
+            # malformed extraction somehow supplies it.
+            if field == "sexually_active" and user.age is not None and user.age < 18:
+                user.sexually_active = None
+                continue
             setattr(user, field, value)
             if field == "allergies":
                 user.allergies_answered = True
             elif field == "medical_conditions":
                 user.medical_conditions_answered = True
-            elif field == "family_hair_loss" and value != "yes":
-                user.family_hair_loss_relation = None
+    if user.age is not None and user.age < 18:
+        user.sexually_active = None
 
 
 async def _handle_onboarding(
     db: AsyncSession, user: User, phone: str, text: str,
     history: list[dict], summary: str | None,
 ) -> None:
-   
-    from app.redis_client import get_arq_pool
-
     missing = user.missing_fields()
     current_target = missing[0] if missing else None
 
@@ -403,18 +458,6 @@ async def _handle_onboarding(
                 user_id=user.id,
             )
         _apply_extracted_fields(user, extracted)
-
-    # Keep personalized plans within the supported age range (12-75 years).
-    # Do not enqueue a personalized plan outside this range.
-    if user.age is not None and not 12 <= user.age <= 75:
-        reply = (
-            "This personalized diet and exercise service is available for users aged 12 to 75. "
-            "If your age was extracted incorrectly, please provide your correct age."
-        )
-        db.add(Message(user_id=user.id, role="assistant", content=reply))
-        await db.commit()
-        await send_text_message(phone, reply)
-        return
 
     missing_after = user.missing_fields()
 
@@ -431,24 +474,25 @@ async def _handle_onboarding(
         await send_text_message(phone, reply)
         return
 
-    just_completed = (not user.onboarding_complete) and (not missing_after)
-    just_completed_high_risk = False
+    just_completed = (not user.hair_onboarding_complete) and (not missing_after)
     if just_completed:
+        user.hair_onboarding_complete = True
+        # Keep this legacy flag true for existing admin/reporting code while the
+        # dedicated flag drives Hair & Scalp routing.
         user.onboarding_complete = True
-        high_risk = detect_high_risk_profile(user.profile_dict())
-        if high_risk:
-            just_completed_high_risk = True
-            logger.warning(
-                "onboarding_complete_high_risk_profile",
-                user_id=user.id,
-                reason=high_risk,
+        # Do not carry a legacy weight-loss summary into the new hair assistant.
+        user.conversation_summary = None
+        if settings.hair_care_launch_hold:
+            reply = (
+                "Perfect! ✅ Your hair and scalp profile is complete.\n\n"
+                "We’re preparing the Hair & Scalp Assistant for launch. During this preparation period, "
+                "hair/scalp questions and personalized guidance are not available yet."
             )
-            reply = high_risk_profile_message()
         else:
             reply = (
-                "Perfect! ✅ Your profile is complete.\n\n"
-                "Your personalized daily diet and exercise plan is now being generated based on "
-                "your goals and preferences. 🌿"
+                "Perfect! ✅ Your hair and scalp profile is complete.\n\n"
+                "You can now ask me about hair shedding, thinning, dandruff, scalp care, and hair-care habits. "
+                "I share general evidence-based information, but I can't diagnose a condition or prescribe treatment."
             )
     else:
         next_field = missing_after[0]
@@ -458,19 +502,32 @@ async def _handle_onboarding(
     await db.commit()
     await send_text_message(phone, reply)
 
-    # Ask for payment only after onboarding is fully complete, and only when the
-    # profile isn't flagged high-risk — a high-risk profile must never reach the
-    # payment prompt or automated plan generation (see high_risk_profile_message()
-    # sent above instead).
-    if just_completed and not just_completed_high_risk:
-        subscription = await get_active_subscription(db, user)
-        if subscription:
-            pool = await get_arq_pool()
-            await pool.enqueue_job("generate_diet_plan_for_user", user.id, True)
-            logger.info("onboarding_complete_plan_queued", user_id=user.id, prefer_text=True)
-        else:
+    # Hair profile completion unlocks the existing subscription gate. Paid adult
+    # users get their first daily hair-care routine via the same idempotent worker.
+    if just_completed:
+        subscription = await get_paid_subscription(db, user)
+        if not subscription:
             await prompt_payment(db, user)
-            logger.info("onboarding_complete_payment_prompted", user_id=user.id)
+            logger.info("hair_onboarding_complete_payment_prompted", user_id=user.id)
+        else:
+            logger.info("hair_onboarding_complete_paid_entitlement_found", user_id=user.id)
+            from app.services.hair_care_plan_service import routine_eligibility_block_reason
+            reason = routine_eligibility_block_reason(
+                age=user.age,
+                medical_conditions=user.medical_conditions,
+                hair_onboarding_complete=user.hair_onboarding_complete,
+            )
+            if settings.hair_care_launch_hold:
+                from app.services.launch_mode import HAIR_CARE_LAUNCH_HOLD_NOTICE, routine_unavailable_notice
+                notice = HAIR_CARE_LAUNCH_HOLD_NOTICE if reason is None else routine_unavailable_notice(reason)
+                db.add(Message(user_id=user.id, role="assistant", content=notice))
+                await db.commit()
+                await send_text_message(phone, notice)
+            elif reason is None:
+                try:
+                    await _enqueue_plan_resume(user, source_id="onboarding")
+                except Exception:
+                    logger.exception("first_hair_care_plan_enqueue_failed", user_id=user.id)
 
 
 
@@ -510,25 +567,25 @@ def _format_profile_recall(user: User, fields: list[str]) -> str:
     labels = {
         "name": "Name",
         "age": "Age",
+        "city": "City",
         "gender": "Gender",
         "height_cm": "Height",
         "weight_kg": "Weight",
-        "activity_level": "Activity level",
-        "goal": "Goal",
-        "diet_preference": "Diet preference",
-        "allergies": "Allergies",
-        "medical_conditions": "Medical conditions",
-        "food_dislikes": "Food dislikes",
-        "city": "City",
-        "hair_wash_frequency": "Hair wash frequency",
-        "water_hardness": "Water hardness",
-        "sugary_food_drink_frequency": "Sugary food/drink intake",
-        "sexually_active": "Sexually active",
-        "family_hair_loss": "Family hair loss",
-        "family_hair_loss_relation": "Family hair loss relation",
+        "hair_wash_frequency": "Hair-washing frequency",
+        "water_hardness": "Water type",
+        "sugary_food_drink_intake": "Sugary food and drink intake",
+        "sexually_active": "Sexual activity answer",
+        "family_hair_loss": "Family history of hair loss",
+        "family_hair_loss_relation": "Family member(s) with hair loss",
         "dairy_intake": "Dairy intake",
+        "activity_level": "Activity level (legacy profile)",
+        "goal": "Goal (legacy profile)",
+        "diet_preference": "Diet preference (legacy profile)",
+        "allergies": "Previously saved allergies",
+        "medical_conditions": "Previously saved medical conditions",
+        "food_dislikes": "Previously saved food dislikes",
     }
-    values = user.profile_dict()
+    values = user.profile_dict(include_sensitive=True, include_legacy=True)
     visible: list[str] = []
     for field in fields:
         value = values.get(field)
@@ -537,7 +594,7 @@ def _format_profile_recall(user: User, fields: list[str]) -> str:
         if field in {"height_cm", "weight_kg"}:
             suffix = " cm" if field == "height_cm" else " kg"
             value = f"{value}{suffix}"
-        elif field in {"goal", "activity_level", "diet_preference"}:
+        elif field in {"goal", "activity_level", "diet_preference", "hair_wash_frequency", "water_hardness", "sugary_food_drink_intake", "sexually_active", "family_hair_loss", "family_hair_loss_relation", "dairy_intake"}:
             value = str(value).replace("_", " ")
         visible.append(f"{labels[field]}: {value}")
 
@@ -553,6 +610,10 @@ def _trusted_profile_updates(route) -> dict:
     """Convert semantic extraction into validated DB fields, with a strict write gate."""
     raw: dict = {}
     for candidate in route.profile_updates:
+        # Sexual activity is sensitive and is only collected by the deterministic
+        # onboarding step; normal LLM-driven updates may never write this field.
+        if candidate.field == "sexually_active":
+            continue
         # LLM output is advisory. Persistence requires high confidence plus current-turn evidence.
         if candidate.confidence < settings.conversation_profile_update_min_confidence:
             continue
@@ -647,7 +708,7 @@ async def _handle_general_qa(
     # Explicit saved-plan retrieval is also deterministic. The LLM only resolves
     # language into a plan reference; it never fabricates or edits stored content.
     if route.intent == "saved_plan_retrieval" and route.confidence >= settings.conversation_route_min_confidence:
-        from app.services.diet_plan_service import get_historical_plan
+        from app.services.hair_care_plan_service import get_historical_plan
         day_number, plan_date, scope, section = _resolve_plan_request(route, history)
         plan = None
         if day_number is not None:
@@ -660,31 +721,35 @@ async def _handle_general_qa(
                 # Keep the stored plan immutable; ask no LLM to regenerate it.
                 # A lightweight exact-section extractor is used only for known headings.
                 section_map = {
-                    "breakfast": "*Breakfast:*",
-                    "mid_morning_snack": "*Breakfast:*",
-                    "mid morning snack": "*Breakfast:*",
-                    "lunch": "*Lunch:*",
-                    "evening_snack": "*Evening snack:*",
-                    "evening snack": "*Evening snack:*",
-                    "dinner": "*Dinner:*",
-                    "exercise": "*Exercise:*",
-                    "hydration": "*Hydration & routine:*",
+                    "morning": "*Morning:*",
+                    "morning_action": "*Morning:*",
+                    "wash": "*Wash & scalp care:*",
+                    "wash and scalp care": "*Wash & scalp care:*",
+                    "wash_and_scalp_care": "*Wash & scalp care:*",
+                    "daytime": "*During the day:*",
+                    "daytime_habit": "*During the day:*",
+                    "nourishment": "*Everyday nourishment:*",
+                    "nourishment_habit": "*Everyday nourishment:*",
+                    "evening": "*Evening:*",
+                    "evening_action": "*Evening:*",
+                    "safety": "*Please note:*",
+                    "safety_note": "*Please note:*",
                 }
                 heading = section_map.get(section.casefold().strip())
                 if heading and heading in plan.content:
                     # Extract the selected labeled section without changing stored data.
                     after = plan.content.split(heading, 1)[1].lstrip()
-                    next_marker = re.search(r"\n\n(?:🍎|🍛|☕|🥗|🏃|💧|⚠️|🍳)\s*\*[^*]+\*:", after)
+                    next_marker = re.search(r"\n\n(?:☀️|🧴|🌤️|🥗|🌙|ℹ️)\s*\*[^*]+\*:", after)
                     body = after[:next_marker.start()] if next_marker else after
-                    reply = f"From your saved *Day {plan.day_number}* plan:\n\n{heading} {body.strip()}"
+                    reply = f"From your saved *Day {plan.day_number}* hair-care routine:\n\n{heading} {body.strip()}"
                 else:
-                    reply = f"Here is your saved *Day {plan.day_number}* diet plan. 🌿\n\n{plan.content}"
+                    reply = f"Here is your saved *Day {plan.day_number}* hair-care routine. 🌿\n\n{plan.content}"
             else:
-                reply = f"Here is your saved *Day {plan.day_number}* diet plan. 🌿\n\n{plan.content}"
+                reply = f"Here is your saved *Day {plan.day_number}* hair-care routine. 🌿\n\n{plan.content}"
         elif day_number is not None:
-            reply = f"I don't have a saved Day {day_number} diet plan yet."
+            reply = f"I don't have a saved Day {day_number} hair-care routine yet."
         else:
-            reply = "I don't have a saved diet plan for that date yet."
+            reply = "I don't have a saved hair-care routine for that date yet."
 
         db.add(Message(user_id=user.id, role="assistant", content=reply))
         await db.commit()
@@ -717,14 +782,9 @@ async def _handle_general_qa(
         and route.confidence >= settings.conversation_route_min_confidence
         and route.modification_instruction
     ):
-        from app.services.diet_plan_service import revise_today_plan, _send_plan
+        from app.services.hair_care_plan_service import revise_today_plan, _send_plan
 
         instruction = route.modification_instruction
-        if new_dislikes:
-            instruction = (
-                f"{instruction} Additionally, the user explicitly added these food dislikes: "
-                f"{', '.join(sorted(new_dislikes))}. Do not include them in today's plan."
-            )
 
         revision = None
         try:
@@ -738,26 +798,27 @@ async def _handle_general_qa(
 
         if revision and revision.plan:
             if revision.is_duplicate:
-                # FIX: the same/near-same instruction was already applied a
-                # short while ago (see plan_revision_policy.py). Say so
-                # honestly instead of claiming a fresh update just happened,
-                # and reuse the existing plan instead of regenerating another
-                # different-but-equivalent version.
+                # Idempotent duplicate modification: return the saved content
+                # in this reply. Do not call _send_plan(), which correctly refuses
+                # to redeliver an already-sent plan.
                 reply = (
-                    "Looks like I already updated today's plan for that a little while ago — "
-                    "here's the current version. 🌿"
+                    "I already applied that change to today's hair-care routine, so I kept the saved version unchanged. 🌿\n\n"
+                    f"{revision.plan.content}"
                 )
-            else:
-                reply = "Done ✅ I updated today's saved plan based on your latest request. The updated plan is below. 🌿"
+                db.add(Message(user_id=user.id, role="assistant", content=reply))
+                await db.commit()
+                await send_text_message(phone, reply)
+                return
+
+            reply = "Done ✅ I updated today's saved hair-care routine. The updated version is below. 🌿"
             db.add(Message(user_id=user.id, role="assistant", content=reply))
             await db.commit()
             await send_text_message(phone, reply)
-            await _send_plan(user, revision.plan)
+            await _send_plan(user.id, revision.plan.id)
             return
 
         reply = (
-            "I noted your request, but I couldn't update today's saved plan right now. "
-            "Your preference is saved and will be respected in future plans."
+            "I couldn't update today's saved hair-care routine right now. Please try again, or ask me for general hair-care guidance."
         )
         db.add(Message(user_id=user.id, role="assistant", content=reply))
         await db.commit()
