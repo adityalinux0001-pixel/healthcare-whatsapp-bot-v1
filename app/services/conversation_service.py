@@ -208,17 +208,29 @@ async def handle_incoming_message(
             # Store a redacted placeholder with the WhatsApp message ID so webhook
             # retries remain idempotent without retaining unhandled health questions.
             if settings.hair_care_launch_hold:
-                from app.services.launch_mode import HAIR_CARE_LAUNCH_HOLD_STANDBY_REPLY
+                # HAIR_CARE_LAUNCH_HOLD_STANDBY_REPLY is intentionally not sent here.
+                # Payment success already sends the confirmation/ETA message. Sending
+                # another automated reply for each inbound message caused repeated
+                # WhatsApp messages during launch hold. Keep only a redacted placeholder
+                # with the Meta message ID so retries are idempotent and no health text
+                # is retained or routed to the model before launch.
                 db.add(Message(
                     user_id=user.id,
                     role="user",
                     content="[Message received during pre-launch hold; not processed]",
                     whatsapp_message_id=wa_message_id,
                 ))
-                db.add(Message(user_id=user.id, role="assistant", content=HAIR_CARE_LAUNCH_HOLD_STANDBY_REPLY))
                 await db.commit()
-                await send_text_message(phone, HAIR_CARE_LAUNCH_HOLD_STANDBY_REPLY)
-                logger.info("hair_care_launch_hold_message_not_processed", user_id=user.id)
+                logger.info(
+                    "hair_care_launch_hold_standby_reply_suppressed",
+                    user_id=user.id,
+                    wa_message_id=wa_message_id,
+                    reason="payment_confirmation_already_sent",
+                )
+                logger.info(
+                    "hair_care_launch_hold_message_not_processed",
+                    user_id=user.id, wa_message_id=wa_message_id,
+                )
                 return
 
             # Once the service is launched, route high-concern symptoms to the

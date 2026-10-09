@@ -25,64 +25,65 @@ def _menu(title: str, options: list[str], example: str, note: str | None = None)
 
 
 QUESTIONS: dict[str, str] = {
+    # The seven core questions are numbered; conditional/extra prompts use bullets only.
     # Question wording/options below are the manager-approved text. Only the
     # numbering and the "how to reply" line were added to prevent wrong input.
     "age": (
-        "*How old are you, and where do you currently live?*\n\n"
-        "- Age: ___\n\n- City: ___\n\n"
+        "*Question 1 of 7: How old are you, and where do you currently live?*\n\n"
+        "• Age: ___\n\n• City: ___\n\n"
         "👉 Reply in *one message*: age in numbers, then your city name.\n"
         "Example: 28, Indore"
     ),
     "city": (
-        "*Where do you currently live?*\n\n"
-        "- City: ___\n\n"
+        "*• Where do you currently live?*\n\n"
+        "• City: ___\n\n"
         "👉 Reply with *only your city name*. Example: Indore"
     ),
     "hair_wash_frequency": _menu(
-        "How often do you wash your hair?",
+        "Question 2 of 7: How often do you wash your hair?",
         ["Daily", "2–3 times a week", "Once a week", "Less than once a week"],
         example="2",
     ),
     "water_hardness": _menu(
-        "What type of water do you usually use to wash your hair?",
+        "Question 3 of 7: What type of water do you usually use to wash your hair?",
         ["Soft water", "Moderately hard water", "Hard water", "Very hard water", "I'm not sure"],
         example="5",
     ),
     "height_cm": (
-        "*What are your current height and weight?*\n\n"
-        "- Height: ___ cm / ft & inches\n- Weight: ___ kg / lbs\n\n"
+        "*Question 4 of 7: What are your current height and weight?*\n\n"
+        "• Height: ___ cm / ft & inches\n• Weight: ___ kg / lbs\n\n"
         "👉 Reply in *one message* and *always write the units*. Examples:\n"
         "170 cm, 65 kg\n"
         "5 ft 7 in, 143 lbs"
     ),
     "weight_kg": (
-        "*What is your current weight?*\n\n"
-        "- Weight: ___ kg / lbs\n\n"
+        "*• What is your current weight?*\n\n"
+        "• Weight: ___ kg / lbs\n\n"
         "👉 Reply with the number *and the unit*. Examples: 65 kg or 143 lbs"
     ),
     "sugary_food_drink_intake": _menu(
-        "How much sugary food or drinks do you normally consume?",
+        "Question 5 of 7: How much sugary food or drinks do you normally consume?",
         ["None or very little", "Low", "Moderate", "High", "Very high"],
         example="3",
         note="Examples: sweets, desserts, sugary tea/coffee, soft drinks, packaged juices, etc.",
     ),
     "sexually_active": _menu(
-        "Are you currently sexually active?",
+        "• Are you currently sexually active?",
         ["Yes", "No", "Prefer not to say"],
         example="3",
     ),
     "family_hair_loss": _menu(
-        "Does hair loss run in your family history ?",
+        "Question 6 of 7: Does hair loss run in your family history ?",
         ["Yes", "No", "Not sure"],
         example="2",
     ),
     "family_hair_loss_relation": _menu(
-        "Who in your family has experienced noticeable hair loss?",
+        "• Who in your family has experienced noticeable hair loss?",
         ["Father", "Mother", "Brother/Sister", "Grandparent", "Multiple family members", "Other"],
         example="1",
     ),
     "dairy_intake": _menu(
-        "How much dairy do you normally consume?",
+        "Question 7 of 7: How much dairy do you normally consume?",
         [
             "None",
             "Low — occasionally",
