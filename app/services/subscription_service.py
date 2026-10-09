@@ -142,9 +142,7 @@ def _payment_message(url: str) -> str:
         "✨ Support for hair shedding, thinning, dandruff and scalp care\n\n"
         f"Activate now for just ₹{settings.subscription_price_inr}:\n\n"
         f"{url}\n\n"
-        f"📅 Your plan starts reaching you within 2–3 business days of payment, and your {settings.subscription_days} days "
-        "begin from the day your first routine is sent, not the payment date. "
-        "If you already have a running subscription, this paid period stays queued until it is next in line."
+       
     )
 
 
