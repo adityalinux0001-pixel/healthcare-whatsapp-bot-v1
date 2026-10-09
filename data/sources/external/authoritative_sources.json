@@ -40,6 +40,14 @@
       "url": "https://www.cdc.gov/physical-activity-basics/guidelines/adults.html",
       "publication": "CDC guidance",
       "license_status": "REVIEW_SOURCE_TERMS_BEFORE_REPRODUCTION"
+    },
+    {
+      "source_name": "Hair and Scalp Health Guidance Summaries",
+      "role": "authoritative",
+      "topic": "hair_loss_and_scalp_health",
+      "url": "https://www.aad.org/public/diseases/hair-loss/causes/18-causes",
+      "publication": "Continuously updated official dermatology guidance summaries; URLs stored per topic",
+      "license_status": "PARAPHRASED_SUMMARY; REVIEW_SOURCE_TERMS_BEFORE_PRODUCT_USE"
     }
   ]
 }

@@ -11,25 +11,19 @@ from pydantic import ValidationError
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from app.config import settings
-from app.knowledge.retrieval import (
-    retrieve_diet_context,
-    retrieve_general_context,
-    retrieve_exercise_context,
-)
-from app.knowledge.safety import detect_red_flag, emergency_response
+from app.knowledge.retrieval import retrieve_general_context
+from app.knowledge.safety import detect_red_flag, emergency_response, detect_hair_concern, hair_concern_response
 from app.knowledge.store import KnowledgeBaseNotReady
 from app.llm.conversation_schemas import ConversationRoute
 from app.llm.prompts import (
-    ONBOARDING_SYSTEM_PROMPT,
     GENERAL_QA_SYSTEM_PROMPT,
-    DIET_PLAN_PROMPT,
-    DIET_PLAN_REVISION_PROMPT,
+    HAIR_CARE_PLAN_PROMPT,
+    HAIR_CARE_PLAN_REVISION_PROMPT,
     SUMMARY_UPDATE_PROMPT,
     UPDATE_PROFILE_FUNCTION,
     CONVERSATION_ROUTER_PROMPT,
 )
-from app.llm.schemas import DietPlanOutput
-from app.services.plan_validation import validate_plan
+from app.llm.schemas import HairCarePlanOutput
 
 
 class PlanGenerationValidationError(RuntimeError):
@@ -98,75 +92,13 @@ async def _tool_followup(contents, candidate_content, tool_calls, system_prompt:
     return followup.text or "Understood. I have noted that."
 
 
-async def run_onboarding_turn(
-    profile, missing_fields, history, user_message, summary=None, explicit_fields=None
-):
-    explicit_fields = explicit_fields or {}
-    latest_assistant_question = next(
-        (str(turn.get("content") or "").strip() for turn in reversed(history) if turn.get("role") == "assistant"),
-        "",
-    )
-    state_hint = (
-        "\n\nCURRENT TURN CONTEXT:\n"
-        f"Latest assistant message/question: {latest_assistant_question or 'Not available'}\n"
-        "Interpret the user's current message as an answer to that message when appropriate. "
-        "A short reply such as 'no', 'none', or 'I don't have any' is meaningful only when the preceding question clearly establishes what it refers to. "
-    )
-    if explicit_fields:
-        state_hint += (
-            "\nCURRENT-TURN HIGH-CONFIDENCE EXTRACTION (treat only these values as explicitly stated by the user):\n"
-            f"{explicit_fields}\n"
-            "These values are authoritative for this turn. Do not contradict them in your reply. "
-            "In particular, never turn veg/vegetarian into vegan unless the user explicitly said vegan."
-        )
-
-    system_prompt = ONBOARDING_SYSTEM_PROMPT.format(
-        missing_fields=missing_fields,
-        profile=profile,
-        summary=summary or "No summary yet.",
-    ) + state_hint
-    contents = _history_to_contents(history)
-    contents.append(types.Content(role="user", parts=[types.Part(text=user_message)]))
-    response = await _generate(
-        settings.gemini_model_chat,
-        contents,
-        types.GenerateContentConfig(
-            system_instruction=system_prompt,
-            tools=[_update_profile_tool],
-            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-        ),
-    )
-    extracted, _, candidate_content, reply_text, tool_calls = _extract_function_calls(response)
-    if tool_calls and extracted and not reply_text and candidate_content:
-        # Give the final conversational response an up-to-date, authoritative view of the
-        # current turn. This prevents stale-profile follow-ups from re-asking filled fields
-        # or describing vegetarian users as vegan.
-        accepted = {**extracted, **explicit_fields}
-        merged_profile = {**profile, **accepted}
-        remaining = [
-            field for field in missing_fields
-            if field not in accepted or accepted.get(field) in (None, "")
-        ]
-        followup_prompt = ONBOARDING_SYSTEM_PROMPT.format(
-            missing_fields=remaining,
-            profile=merged_profile,
-            summary=summary or "No summary yet.",
-        )
-        followup_prompt += (
-            "\n\nAUTHORITATIVE CURRENT-TURN FACTS ALREADY CAPTURED:\n"
-            f"{accepted}\n"
-            "Do not ask again about any field present above. Do not contradict these facts. "
-            "Never call a vegetarian user vegan unless vegan was explicitly stated. "
-            "Use English only. Respond naturally and ask only about the remaining missing fields, maximum 1-2 at a time."
-        )
-        reply_text = await _tool_followup(contents, candidate_content, tool_calls, followup_prompt)
-    return reply_text or "Understood. Let's continue.", extracted
-
-
 async def run_general_qa(profile, history, user_message, summary=None, allow_profile_update_tool=False, grounding_required=True, dialogue_act="request"):
     red_flag = detect_red_flag(user_message)
     if red_flag:
         return emergency_response(), {}, None
+    hair_concern = detect_hair_concern(user_message)
+    if hair_concern:
+        return hair_concern_response(hair_concern), {}, None
 
     if grounding_required:
         try:
@@ -217,110 +149,124 @@ async def run_general_qa(profile, history, user_message, summary=None, allow_pro
     return reply_text or "Sorry, I could not understand that. Could you please rephrase?", extracted, None
 
 
-async def generate_diet_plan(
-    profile, recent_meals, summary=None, day_number=1, modification_instruction: str | None = None,
+
+_HAIR_PLAN_UNSAFE_PATTERNS = (
+    # Medication/treatment instructions are out of scope for this non-medical routine.
+    r"\b(?:minoxidil|finasteride|dutasteride|spironolactone|isotretinoin|ketoconazole|clobetasol)\b",
+    r"\b\d+(?:\.\d+)?\s*(?:mg|mcg|µg|iu)\b",
+    r"\b(?:take|start|increase|double|recommend|use)\s+(?:a\s+)?(?:supplement|biotin|iron|zinc|vitamin|collagen)\b",
+    r"\b(?:hair[- ]growth|regrowth|anti[- ]hair[- ]loss)\s+(?:serum|product|treatment|medication)\b",
+    r"\b(?:blood test|ferritin test|thyroid test|lab test|laboratory test)\b",
+    r"\b(?:guaranteed to|guarantee(?:d)? regrowth|cure hair loss|will definitely regrow)\b",
+)
+
+
+def _hair_plan_validation_problems(plan: HairCarePlanOutput) -> list[str]:
+    import re
+
+    text = "\n".join(getattr(plan, field) for field in (
+        "morning_action", "wash_and_scalp_care", "daytime_habit",
+        "nourishment_habit", "evening_action", "safety_note",
+    ))
+    problems: list[str] = []
+    if any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in _HAIR_PLAN_UNSAFE_PATTERNS):
+        problems.append("The routine contains medication, treatment, lab-test, supplement, dosage, or guaranteed-result language.")
+    safety_note = plan.safety_note.casefold()
+    if not any(phrase in safety_note for phrase in (
+        "general care", "general hair care", "general self-care", "general information", "general routine"
+    )):
+        problems.append("The safety note must explain that this is general care.")
+    has_no_diagnosis = any(phrase in safety_note for phrase in (
+        "not a diagnosis", "not diagnosis", "not intended to diagnose", "does not diagnose", "no diagnosis"
+    ))
+    has_no_treatment = any(phrase in safety_note for phrase in (
+        "not a treatment", "not treatment", "not medical treatment", "not intended to treat",
+        "not a diagnosis or treatment", "not a diagnosis or medical treatment"
+    ))
+    if not (has_no_diagnosis and has_no_treatment):
+        problems.append("The safety note must state that the routine is neither a diagnosis nor treatment.")
+    if not any(phrase in safety_note for phrase in (
+        "dermatologist", "qualified clinician", "healthcare professional", "health-care professional", "doctor"
+    )):
+        problems.append("The safety note must say when to seek professional assessment.")
+    if len(text) > 2100:
+        problems.append("Routine is too long for a concise WhatsApp message.")
+    return problems
+
+
+def _render_hair_care_plan(plan: HairCarePlanOutput, day_number: int) -> str:
+    content = (
+        f"🌿 *Your Daily Hair-Care Routine — Day {day_number}*\n\n"
+        f"☀️ *Morning:* {plan.morning_action}\n\n"
+        f"🧴 *Wash & scalp care:* {plan.wash_and_scalp_care}\n\n"
+        f"🌤️ *During the day:* {plan.daytime_habit}\n\n"
+        f"🥗 *Everyday nourishment:* {plan.nourishment_habit}\n\n"
+        f"🌙 *Evening:* {plan.evening_action}\n\n"
+        f"ℹ️ *Please note:* {plan.safety_note}"
+    )
+    if len(content) > 3600:
+        raise PlanGenerationValidationError(["Rendered routine exceeds WhatsApp-safe length."])
+    return content
+
+
+async def generate_hair_care_plan(
+    profile, recent_plans, summary=None, day_number=1,
+    modification_instruction: str | None = None,
     current_plan_text: str | None = None,
 ) -> str:
-    try:
-        diet_context = await retrieve_diet_context(
-            profile, recent_meals or ["No recent meals recorded."], top_k=settings.knowledge_top_k_diet
-        )
-        exercise_context = await retrieve_exercise_context(profile, top_k=settings.knowledge_top_k_exercise)
-    except KnowledgeBaseNotReady:
-        raise
-
-    if diet_context == "NO_VERIFIED_CONTEXT_AVAILABLE":
-        raise KnowledgeBaseNotReady("No authoritative diet context was retrieved.")
-    if exercise_context == "NO_VERIFIED_CONTEXT_AVAILABLE":
-        raise KnowledgeBaseNotReady("No authoritative exercise context was retrieved.")
-
-    knowledge_context = (
-        "AUTHORITATIVE DIET/NUTRITION CONTEXT:\n" + diet_context +
-        "\n\nAUTHORITATIVE EXERCISE CONTEXT:\n" + exercise_context
+    """Generate a grounded, non-medical daily hair-care routine with deterministic checks."""
+    plan_question = (
+        "Create a simple daily hair-care routine based on authoritative dermatologist guidance: "
+        "gentle washing and conditioning, scalp/hair handling, avoiding damage from heat/chemical processing "
+        "and tight hairstyles, general balanced nourishment, and when to seek a dermatologist. "
+        "Do not diagnose or recommend medicine or supplements."
     )
-    prompt_template = DIET_PLAN_REVISION_PROMPT if modification_instruction else DIET_PLAN_PROMPT
+    knowledge_context = await retrieve_general_context(
+        profile, plan_question, top_k=settings.knowledge_top_k_qa
+    )
+    if not knowledge_context or knowledge_context == "NO_VERIFIED_CONTEXT_AVAILABLE" or "RED_FLAG_DETECTED:" in knowledge_context:
+        raise KnowledgeBaseNotReady("No verified authoritative hair-care context is available for routine generation.")
+
+    prompt_template = HAIR_CARE_PLAN_REVISION_PROMPT if modification_instruction else HAIR_CARE_PLAN_PROMPT
     prompt_values = {
         "profile": profile,
-        "recent_meals": recent_meals or ["No recent meals recorded."],
-        "summary": summary or "No long-term preferences recorded yet.",
+        "recent_plans": recent_plans or ["No previous hair-care routines."],
         "day_number": day_number,
         "knowledge_context": knowledge_context,
     }
     if modification_instruction:
+        prompt_values["current_plan_text"] = current_plan_text or "No saved routine available."
         prompt_values["modification_instruction"] = modification_instruction
-        # FIX: the revision prompt now actually shows the model what it's
-        # editing, instead of asking it to "apply this to today's existing
-        # plan" while giving it no idea what that plan contains.
-        prompt_values["current_plan_text"] = current_plan_text or "No current plan text available."
     base_prompt = prompt_template.format(**prompt_values)
-
     repair_feedback = ""
+    last_problems: list[str] = []
+
     for attempt in range(2):
         prompt = base_prompt
         if repair_feedback:
-            prompt += "\n\nIMPORTANT REPAIR REQUIRED:\n" + repair_feedback
+            prompt += "\n\nSAFETY REPAIR REQUIRED:\n" + repair_feedback
         response = await _generate(
-            settings.gemini_model_diet_plan,
+            settings.gemini_model_hair_plan,
             [types.Content(role="user", parts=[types.Part(text=prompt)])],
             types.GenerateContentConfig(
                 temperature=0.15,
                 response_mime_type="application/json",
-                response_schema=DietPlanOutput,
+                response_schema=HairCarePlanOutput,
             ),
         )
         try:
-            plan = DietPlanOutput.model_validate_json(response.text)
+            plan = HairCarePlanOutput.model_validate_json(response.text)
         except (ValidationError, TypeError, json.JSONDecodeError) as exc:
-            repair_feedback = (
-                "Return valid structured plan fields only. "
-                f"Parsing error: {str(exc)[:300]}"
-            )
-            logger.warning(
-                "diet_plan_structured_output_invalid",
-                day_number=day_number,
-                attempt=attempt + 1,
-                error=str(exc)[:500],
-            )
+            last_problems = [f"Invalid structured hair-care routine: {str(exc)[:250]}"]
+            repair_feedback = "Return all required structured fields as valid JSON. " + last_problems[0]
             continue
+        last_problems = _hair_plan_validation_problems(plan)
+        if not last_problems:
+            return _render_hair_care_plan(plan, day_number)
+        repair_feedback = "Remove these unsafe or overly long elements: " + "; ".join(last_problems)
 
-        problems = validate_plan(plan, profile)
-        if not problems:
-            return _render_plan(plan, day_number)
-
-        logger.warning(
-            "diet_plan_deterministic_validation_failed",
-            day_number=day_number,
-            attempt=attempt + 1,
-            problems=problems[:20],
-        )
-        repair_feedback = (
-            "The previous plan violated these application constraints: "
-            + "; ".join(problems[:20])
-            + ". Regenerate the complete plan and remove every violating ingredient "
-            "from all meal fields. Do not mention the rejected ingredient as an ingredient "
-            "or meal component; choose a compliant alternative instead."
-        )
-
-    logger.error(
-        "diet_plan_generation_validation_exhausted",
-        day_number=day_number,
-        attempts=2,
-        problems=problems[:20] if 'problems' in locals() else ["unknown_validation_failure"],
-    )
-    raise PlanGenerationValidationError(problems if 'problems' in locals() else ["unknown_validation_failure"])
-
-
-def _render_plan(plan: DietPlanOutput, day_number: int) -> str:
-    return (
-        f"🌿 *Day {day_number} — Today's Diet Plan*\n\n"
-        f"🍳 *Breakfast:* {plan.breakfast}\n\n"
-        f"🍛 *Lunch:* {plan.lunch}\n\n"
-        f"☕ *Evening snack:* {plan.evening_snack}\n\n"
-        f"🥗 *Dinner:* {plan.dinner}\n\n"
-        f"🏃 *Exercise:* {plan.exercise}\n\n"
-        f"💧 *Hydration & routine:* {plan.hydration_and_routine}\n\n"
-        f"⚠️ {plan.safety_note}"
-    )
+    logger.error("hair_care_plan_generation_validation_exhausted", day_number=day_number, problems=last_problems)
+    raise PlanGenerationValidationError(last_problems or ["Unknown hair-care routine validation failure."])
 
 
 async def update_conversation_summary(existing_summary, recent_messages):

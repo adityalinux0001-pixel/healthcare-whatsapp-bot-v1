@@ -9,7 +9,7 @@ def _route(**overrides):
         "dialogue_act": "request",
         "confidence": 0.98,
         "grounding_required": True,
-        "response_profile_fields": ["goal", "name", "age"],
+        "response_profile_fields": ["city", "hair_wash_frequency", "sexually_active", "name"],
         "relevant_history_indices": [0, 1, 4, 7, 999],
         "use_long_term_memory": False,
     }
@@ -17,81 +17,75 @@ def _route(**overrides):
     return ConversationRoute(**data)
 
 
-def test_response_context_minimizes_profile_and_history():
+def test_response_context_minimizes_profile_and_history_and_never_sends_sensitive_field():
     profile = {
-        "name": "Adarsh",
+        "name": "User",
         "age": 28,
-        "gender": "male",
+        "city": "Indore",
         "height_cm": 175,
         "weight_kg": 65,
-        "goal": "muscle_gain",
-        "diet_preference": "vegan",
-        "allergies": "None reported",
-        "medical_conditions": "None reported",
-        "food_dislikes": "paneer",
+        "hair_wash_frequency": "2_3_times_week",
+        "water_hardness": "hard",
+        "sugary_food_drink_intake": "moderate",
+        "family_hair_loss": "yes",
+        "family_hair_loss_relation": "father",
+        "dairy_intake": "moderate",
+        "sexually_active": "yes",
+        "medical_conditions": "asthma",
     }
     history = [
-        {"role": "user", "content": "what was my goal?"},
-        {"role": "assistant", "content": "Your saved goal is muscle gain."},
-        {"role": "user", "content": "what was my name?"},
-        {"role": "assistant", "content": "I don't have that detail saved yet."},
-        {"role": "user", "content": "can I eat rice during weight gain?"},
-        {"role": "assistant", "content": "Yes, rice can fit into a muscle-gain diet."},
+        {"role": "user", "content": "what was my hair wash frequency?"},
+        {"role": "assistant", "content": "You said 2–3 times a week."},
+        {"role": "user", "content": "what was my city?"},
+        {"role": "assistant", "content": "You said Indore."},
+        {"role": "user", "content": "how often should I wash my hair?"},
+        {"role": "assistant", "content": "It depends on your scalp and hair type."},
         {"role": "user", "content": "what is my age?"},
-        {"role": "assistant", "content": "Your saved age is 28."},
+        {"role": "assistant", "content": "You are 28."},
     ]
 
     p, h, summary = build_response_context(profile, history, None, _route())
 
     assert "name" not in p
-    assert p["goal"] == "muscle_gain"
-    assert p["allergies"] == "None reported"
-    assert p["medical_conditions"] == "None reported"
+    assert "sexually_active" not in p
+    assert p["city"] == "Indore"
+    assert p["hair_wash_frequency"] == "2_3_times_week"
+    assert p["medical_conditions"] == "asthma"
     assert h == []
-    assert all(0 <= i < len(history) for i in range(len(history)))
     assert summary is None
 
 
 def test_long_term_memory_is_opt_in():
-    profile = {"goal": "muscle_gain", "allergies": "None reported", "medical_conditions": "None reported"}
-    history = [{"role": "user", "content": "what about sweets?"}]
-    route = _route(response_profile_fields=["goal"], relevant_history_indices=[], use_long_term_memory=True)
-    p, h, summary = build_response_context(profile, history, "User prefers an earlier dinner.", route)
-    assert p["goal"] == "muscle_gain"
+    profile = {"hair_wash_frequency": "daily", "family_hair_loss": "no"}
+    history = [{"role": "user", "content": "what about dandruff?"}]
+    route = _route(response_profile_fields=["hair_wash_frequency"], relevant_history_indices=[], use_long_term_memory=True)
+    p, h, summary = build_response_context(profile, history, "User has dandruff.", route)
+    assert p["hair_wash_frequency"] == "daily"
     assert h == []
-    assert summary == "User prefers an earlier dinner."
+    assert summary == "User has dandruff."
 
 
-def test_grounded_health_context_includes_core_personalization_fields():
+def test_grounded_context_uses_hair_profile_and_only_saved_safety_fields():
     profile = {
-        "goal": "muscle_gain",
-        "diet_preference": "veg",
-        "allergies": "None reported",
-        "medical_conditions": "None reported",
         "age": 24,
+        "city": "Pune",
+        "hair_wash_frequency": "daily",
+        "water_hardness": "not_sure",
+        "dairy_intake": "moderate",
     }
     route = _route(response_profile_fields=[])
     p, _, _ = build_response_context(profile, [], None, route)
-    assert p["goal"] == "muscle_gain"
-    assert p["diet_preference"] == "veg"
-    assert p["allergies"] == "None reported"
-    assert p["medical_conditions"] == "None reported"
-    assert "age" not in p
+    assert p["age"] == 24
+    assert p["city"] == "Pune"
+    assert p["hair_wash_frequency"] == "daily"
+    assert "medical_conditions" not in p
+    assert "allergies" not in p
 
 
 def test_correction_dialogue_act_keeps_immediately_preceding_turn():
-    """Regression test for a real failure: the user asked "but when i told you
-    to update my plan?" right after the assistant said "Done - I updated
-    today's saved plan...". Because dialogue_act=correction was not in the
-    history allowlist, the answer model got no history at all and denied any
-    record of the update it had just made.
-
-    A correction is definitionally about the immediately preceding turn, so
-    it must be allowed to carry history just like follow_up/accept_offer.
-    """
     history = [
-        {"role": "user", "content": "I missed today's exercise it was a busy day!"},
-        {"role": "assistant", "content": "Done \u2705 I updated today's saved plan based on your latest request."},
+        {"role": "user", "content": "I missed the hair wash yesterday"},
+        {"role": "assistant", "content": "You can resume your usual routine gently."},
     ]
     route = _route(
         intent="general_conversation",
@@ -104,13 +98,14 @@ def test_correction_dialogue_act_keeps_immediately_preceding_turn():
     assert h == history
 
 
-def test_general_qa_prompt_treats_supplied_profile_as_known():
+def test_general_qa_prompt_is_hair_focused_and_uses_grounding_policy():
     rendered = GENERAL_QA_SYSTEM_PROMPT.format(
-        today_date="2026-09-18",
-        profile={"goal": "muscle_gain", "diet_preference": "veg", "allergies": "None reported", "medical_conditions": "None reported"},
+        today_date="2026-10-09",
+        profile={"hair_wash_frequency": "daily"},
         summary="No summary yet.",
-        knowledge_context="Verified nutrition guidance.",
+        knowledge_context="Verified dermatology guidance.",
     )
-    assert "Never ask the user to repeat a profile field" in rendered
-    assert "Do not ask broad questions" in rendered
-    assert "silently use the supplied goal and diet preference" in rendered
+    assert "Hair & Scalp Assistant" in rendered
+    assert "Do not diagnose" in rendered
+    assert "NO_VERIFIED_CONTEXT_AVAILABLE" in rendered
+    assert "Do not turn hair questions into weight-loss" in rendered

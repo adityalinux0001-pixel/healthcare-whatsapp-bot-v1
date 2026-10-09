@@ -5,25 +5,12 @@ from pydantic import BaseModel, Field
 
 
 ProfileField = Literal[
-    "name",
-    "age",
-    "gender",
-    "height_cm",
-    "weight_kg",
-    "activity_level",
-    "goal",
-    "diet_preference",
-    "allergies",
-    "medical_conditions",
-    "food_dislikes",
-    "city",
-    "hair_wash_frequency",
-    "water_hardness",
-    "sugary_food_drink_frequency",
-    "sexually_active",
-    "family_hair_loss",
-    "family_hair_loss_relation",
-    "dairy_intake",
+    "name", "age", "city", "height_cm", "weight_kg",
+    "hair_wash_frequency", "water_hardness", "sugary_food_drink_intake",
+    "sexually_active", "family_hair_loss", "family_hair_loss_relation", "dairy_intake",
+    # Legacy fields remain recallable for users whose historical profile contains them.
+    "gender", "activity_level", "goal", "diet_preference", "allergies",
+    "medical_conditions", "food_dislikes",
 ]
 
 DialogueAct = Literal["request", "follow_up", "accept_offer", "acknowledgement", "correction", "other"]
@@ -106,7 +93,7 @@ class ConversationRoute(BaseModel):
     plan_day_number: int | None = Field(default=None, ge=1, le=3660)
     plan_date: str | None = Field(default=None, description="YYYY-MM-DD only when plan_reference=date.")
     plan_scope: PlanScope = "none"
-    plan_section: str | None = Field(default=None, description="Optional section such as breakfast, lunch, dinner, exercise.")
+    plan_section: str | None = Field(default=None, description="Optional saved-routine section such as morning, wash/scalp care, daytime, nourishment, or evening.")
 
     modification_instruction: str | None = Field(
         default=None,

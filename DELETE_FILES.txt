@@ -1,0 +1,19 @@
+The following legacy files existed in the original project and should be removed when applying this cleanup overlay.
+Do not delete Alembic migration history, deployed database tables, existing user records, or historical diet-plan records.
+
+app/jobs/__init__.py
+app/services/diet_plan_service.py
+app/services/plan_validation.py
+curl
+data/sources/external/authoritative_sources.json
+data/sources/external/exercise_guidelines.json
+data/sources/raw/DGI_2024.pdf
+data/sources/raw/def_survey_responses.csv
+data/sources/raw/diet_recommendations.csv
+data/sources/raw/food_behavior_survey.csv
+data/sources/raw/personalized_diet_recommendations.csv
+docker
+evaluation/golden_health_cases.jsonl
+scripts/send_daily_plan_template_test.py
+tests/test_diet_plan_prompts.py
+tests/test_plan_validation.py

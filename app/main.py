@@ -30,7 +30,7 @@ async def lifespan(app: FastAPI):
 
 docs_enabled = settings.environment != "production"
 app = FastAPI(
-    title="AI Diet Plan WhatsApp Bot",
+    title="Hair & Scalp Assistant",
     lifespan=lifespan,
     docs_url="/docs" if docs_enabled else None,
     redoc_url="/redoc" if docs_enabled else None,

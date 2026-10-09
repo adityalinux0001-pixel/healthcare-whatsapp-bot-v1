@@ -18,7 +18,7 @@ async def list_onboarded_users(
     offset = (page - 1) * page_size
     search_value = (search or "").strip()
 
-    where = "WHERE u.onboarding_complete = TRUE"
+    where = "WHERE u.hair_onboarding_complete = TRUE"
     params: dict[str, object] = {"limit": page_size, "offset": offset}
     if search_value:
         where += " AND (u.name ILIKE :search OR u.phone_number ILIKE :search)"
@@ -35,15 +35,18 @@ async def list_onboarded_users(
             u.phone_number,
             u.name,
             u.age,
-            u.gender,
+            u.city,
             u.height_cm,
             u.weight_kg,
-            u.activity_level,
-            u.goal,
-            u.diet_preference,
+            u.hair_wash_frequency,
+            u.water_hardness,
+            u.sugary_food_drink_intake,
+            u.family_hair_loss,
+            u.family_hair_loss_relation,
+            u.dairy_intake,
+            u.hair_onboarding_complete,
             u.allergies,
             u.medical_conditions,
-            u.food_dislikes,
             u.onboarding_complete,
             u.created_at,
             u.updated_at,
@@ -67,13 +70,15 @@ async def get_user_detail(db: AsyncSession, user_id: int) -> dict | None:
     user_query = text(
         """
         SELECT
-            id, phone_number, name, age, gender, height_cm, weight_kg,
-            activity_level, goal, diet_preference, allergies,
-            medical_conditions, food_dislikes, onboarding_complete,
+            id, phone_number, name, age, city, height_cm, weight_kg,
+            hair_wash_frequency, water_hardness, sugary_food_drink_intake,
+            family_hair_loss, family_hair_loss_relation, dairy_intake,
+            hair_onboarding_complete, allergies, medical_conditions, food_dislikes,
+            gender, activity_level, goal, diet_preference, onboarding_complete,
             health_data_consent_at, allergies_answered, medical_conditions_answered,
             conversation_summary, created_at, updated_at
         FROM users
-        WHERE id = :user_id AND onboarding_complete = TRUE
+        WHERE id = :user_id AND hair_onboarding_complete = TRUE
         """
     )
     user_row = (await db.execute(user_query, {"user_id": user_id})).mappings().first()
@@ -95,6 +100,26 @@ async def get_user_detail(db: AsyncSession, user_id: int) -> dict | None:
         )
     ).mappings().all()
 
+    hair_care_plans = (
+        await db.execute(
+            text(
+                """
+                SELECT id, plan_date, day_number, delivery_status,
+                       send_attempts, last_send_attempt_at, last_send_error,
+                       sent_at, provider_message_id, checkin_status,
+                       checkin_prompt_status, checkin_prompt_attempts,
+                       checkin_prompt_last_error, content, created_at
+                FROM hair_care_plans
+                WHERE user_id = :user_id
+                ORDER BY plan_date DESC, id DESC
+                LIMIT 30
+                """
+            ),
+            {"user_id": user_id},
+        )
+    ).mappings().all()
+
+    # Old plans remain available for audit; never delete them as part of the product switch.
     diet_plans = (
         await db.execute(
             text(
@@ -115,5 +140,6 @@ async def get_user_detail(db: AsyncSession, user_id: int) -> dict | None:
     return {
         "user": dict(user_row),
         "subscriptions": [dict(row) for row in subscriptions],
+        "hair_care_plans": [dict(row) for row in hair_care_plans],
         "diet_plans": [dict(row) for row in diet_plans],
     }

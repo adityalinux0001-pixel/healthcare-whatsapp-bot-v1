@@ -27,15 +27,11 @@ services:
         sync: false
       - key: WHATSAPP_API_VERSION
         value: v21.0
-      - key: WHATSAPP_DAILY_PLAN_TEMPLATE_NAME
-        sync: false
-      - key: WHATSAPP_DAILY_PLAN_TEMPLATE_LANGUAGE_CODE
-        value: en
       - key: GEMINI_API_KEY
         sync: false
       - key: GEMINI_MODEL_CHAT
         value: gemini-2.5-flash-lite
-      - key: GEMINI_MODEL_DIET_PLAN
+      - key: GEMINI_MODEL_HAIR_PLAN
         value: gemini-2.5-flash
       - key: RAZORPAY_KEY_ID
         sync: false
@@ -43,20 +39,16 @@ services:
         sync: false
       - key: RAZORPAY_WEBHOOK_SECRET
         sync: false
+      - key: HAIR_CARE_LAUNCH_HOLD
+        value: "true"
       - key: SUBSCRIPTION_PRICE_INR
         value: "499"
       - key: SUBSCRIPTION_DAYS
         value: "21"
-      - key: KNOWLEDGE_TOP_K_DIET
-        value: "10"
       - key: KNOWLEDGE_TOP_K_QA
         value: "8"
-      - key: KNOWLEDGE_TOP_K_EXERCISE
-        value: "5"
       - key: KNOWLEDGE_AUTHORITATIVE_QUERY_EXPANSIONS
         value: "4"
-      - key: KNOWLEDGE_MIN_AUTHORITATIVE_RESULTS
-        value: "2"
       - key: KNOWLEDGE_MIN_SIMILARITY
         value: "0.25"
       - key: KNOWLEDGE_MIN_AUTHORITATIVE_SCORE
@@ -117,16 +109,6 @@ services:
           name: dietbot-api
           type: web
           envVarKey: WHATSAPP_API_VERSION
-      - key: WHATSAPP_DAILY_PLAN_TEMPLATE_NAME
-        fromService:
-          name: dietbot-api
-          type: web
-          envVarKey: WHATSAPP_DAILY_PLAN_TEMPLATE_NAME
-      - key: WHATSAPP_DAILY_PLAN_TEMPLATE_LANGUAGE_CODE
-        fromService:
-          name: dietbot-api
-          type: web
-          envVarKey: WHATSAPP_DAILY_PLAN_TEMPLATE_LANGUAGE_CODE
       - key: GEMINI_API_KEY
         fromService:
           name: dietbot-api
@@ -137,11 +119,11 @@ services:
           name: dietbot-api
           type: web
           envVarKey: GEMINI_MODEL_CHAT
-      - key: GEMINI_MODEL_DIET_PLAN
+      - key: GEMINI_MODEL_HAIR_PLAN
         fromService:
           name: dietbot-api
           type: web
-          envVarKey: GEMINI_MODEL_DIET_PLAN
+          envVarKey: GEMINI_MODEL_HAIR_PLAN
       - key: RAZORPAY_KEY_ID
         fromService:
           name: dietbot-api
@@ -157,6 +139,11 @@ services:
           name: dietbot-api
           type: web
           envVarKey: RAZORPAY_WEBHOOK_SECRET
+      - key: HAIR_CARE_LAUNCH_HOLD
+        fromService:
+          name: dietbot-api
+          type: web
+          envVarKey: HAIR_CARE_LAUNCH_HOLD
       - key: SUBSCRIPTION_PRICE_INR
         fromService:
           name: dietbot-api
@@ -167,31 +154,16 @@ services:
           name: dietbot-api
           type: web
           envVarKey: SUBSCRIPTION_DAYS
-      - key: KNOWLEDGE_TOP_K_DIET
-        fromService:
-          name: dietbot-api
-          type: web
-          envVarKey: KNOWLEDGE_TOP_K_DIET
       - key: KNOWLEDGE_TOP_K_QA
         fromService:
           name: dietbot-api
           type: web
           envVarKey: KNOWLEDGE_TOP_K_QA
-      - key: KNOWLEDGE_TOP_K_EXERCISE
-        fromService:
-          name: dietbot-api
-          type: web
-          envVarKey: KNOWLEDGE_TOP_K_EXERCISE
       - key: KNOWLEDGE_AUTHORITATIVE_QUERY_EXPANSIONS
         fromService:
           name: dietbot-api
           type: web
           envVarKey: KNOWLEDGE_AUTHORITATIVE_QUERY_EXPANSIONS
-      - key: KNOWLEDGE_MIN_AUTHORITATIVE_RESULTS
-        fromService:
-          name: dietbot-api
-          type: web
-          envVarKey: KNOWLEDGE_MIN_AUTHORITATIVE_RESULTS
       - key: KNOWLEDGE_MIN_SIMILARITY
         fromService:
           name: dietbot-api

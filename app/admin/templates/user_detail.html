@@ -1,18 +1,18 @@
 {% extends "base.html" %}
-{% block title %}User {{ user.id }} · DietBot Admin{% endblock %}
+{% block title %}User {{ user.id }} · Hair Assistant Admin{% endblock %}
 {% block content %}
 <main>
   <p><a href="/admin">← Back to users</a></p>
   <h1>{{ user.name or 'Unnamed User' }}</h1>
   <div class="grid">
     <div class="card"><strong>Contact</strong><p>{{ user.phone_number }}</p><p>User #{{ user.id }}</p></div>
-    <div class="card"><strong>Profile</strong><p>{{ user.age or '—' }} · {{ user.gender or '—' }}</p><p>{{ user.height_cm or '—' }} cm · {{ user.weight_kg or '—' }} kg</p><p>{{ user.activity_level or '—' }}</p></div>
-    <div class="card"><strong>Goal & Diet</strong><p>{{ user.goal or '—' }}</p><p>{{ user.diet_preference or '—' }}</p></div>
+    <div class="card"><strong>Profile</strong><p>{{ user.age or '—' }} · {{ user.city or '—' }}</p><p>{{ user.height_cm or '—' }} cm · {{ user.weight_kg or '—' }} kg</p><p>Hair washing: {{ user.hair_wash_frequency or '—' }}<br>Water: {{ user.water_hardness or '—' }}</p></div>
+    <div class="card"><strong>Hair & lifestyle</strong><p>Sugary food/drinks: {{ user.sugary_food_drink_intake or '—' }}</p><p>Family hair loss: {{ user.family_hair_loss or '—' }}</p><p>Family member(s): {{ user.family_hair_loss_relation or '—' }}</p><p>Dairy intake: {{ user.dairy_intake or '—' }}</p></div>
   </div>
   <div class="grid" style="margin-top:14px">
-    <div class="card"><strong>Allergies</strong><pre>{{ user.allergies or 'None reported' }}</pre></div>
-    <div class="card"><strong>Medical Conditions</strong><pre>{{ user.medical_conditions or 'None reported' }}</pre></div>
-    <div class="card"><strong>Food Dislikes</strong><pre>{{ user.food_dislikes or 'None reported' }}</pre></div>
+    <div class="card"><strong>Previously saved allergies</strong><pre>{{ user.allergies or 'No prior answer saved' }}</pre></div>
+    <div class="card"><strong>Previously saved medical conditions</strong><pre>{{ user.medical_conditions or 'No prior answer saved' }}</pre></div>
+    <div class="card"><strong>Previously saved food dislikes</strong><pre>{{ user.food_dislikes or 'No prior answer saved' }}</pre></div>
   </div>
   <div class="card" style="margin-top:14px">
     <h2>Subscriptions</h2>
@@ -21,9 +21,28 @@
     </table>
   </div>
   <div class="card" style="margin-top:14px">
-    <h2>Recent Diet Plans</h2>
+    <h2>Daily hair-care routines</h2>
+    <table><thead><tr><th>Day / Date</th><th>Delivery</th><th>Attempts</th><th>Check-in</th><th>Last error</th><th>Content</th></tr></thead>
+      <tbody>
+      {% for plan in hair_care_plans %}
+        <tr>
+          <td>Day {{ plan.day_number }}<br><span class="muted">{{ plan.plan_date }}</span></td>
+          <td>{{ plan.delivery_status }}<br><span class="muted">Sent: {{ plan.sent_at or '—' }}</span><br><span class="muted">Provider ID: {{ plan.provider_message_id or '—' }}</span></td>
+          <td>{{ plan.send_attempts }} plan send(s)<br>{{ plan.checkin_prompt_attempts }} check-in send(s)</td>
+          <td>{{ plan.checkin_status or '—' }}<br><span class="muted">Prompt: {{ plan.checkin_prompt_status }}</span></td>
+          <td style="max-width:260px"><pre>{{ plan.last_send_error or plan.checkin_prompt_last_error or '—' }}</pre></td>
+          <td style="max-width:420px"><pre>{{ plan.content }}</pre></td>
+        </tr>
+      {% else %}
+        <tr><td colspan="6" class="muted">No hair-care routines found.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="card" style="margin-top:14px">
+    <h2>Historical diet plans (legacy records)</h2>
     <table><thead><tr><th>Day</th><th>Date</th><th>Status</th><th>Attempts</th><th>Sent</th><th>Content</th></tr></thead>
-      <tbody>{% for plan in diet_plans %}<tr><td>{{ plan.day_number }}</td><td>{{ plan.plan_date }}</td><td>{{ plan.delivery_status }}</td><td>{{ plan.send_attempts }}</td><td>{{ plan.sent_at or '—' }}</td><td style="max-width:420px"><pre>{{ plan.content }}</pre></td></tr>{% else %}<tr><td colspan="6" class="muted">No diet plans found.</td></tr>{% endfor %}</tbody>
+      <tbody>{% for plan in diet_plans %}<tr><td>{{ plan.day_number }}</td><td>{{ plan.plan_date }}</td><td>{{ plan.delivery_status }}</td><td>{{ plan.send_attempts }}</td><td>{{ plan.sent_at or '—' }}</td><td style="max-width:420px"><pre>{{ plan.content }}</pre></td></tr>{% else %}<tr><td colspan="6" class="muted">No historical diet plans found.</td></tr>{% endfor %}</tbody>
     </table>
   </div>
 </main>

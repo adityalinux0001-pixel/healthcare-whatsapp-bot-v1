@@ -15,7 +15,7 @@ def create_payment_link(phone_number: str, amount_inr: int) -> tuple[str, str]:
         "currency": "INR",
         "accept_partial": False,
         "expire_by": expires_at,
-        "description": f"{settings.subscription_days}-day AI Diet Plan subscription",
+        "description": f"{settings.subscription_days}-day Hair & Scalp Assistant subscription",
         "customer": {"contact": phone_number},
         "notify": {"sms": True, "whatsapp": False},
         "reminder_enable": True,

@@ -6,6 +6,13 @@ from typing import Any
 _ALLOWED_ACTIVITY = {"sedentary", "light", "moderate", "active"}
 _ALLOWED_GOALS = {"weight_loss", "weight_gain", "maintain", "muscle_gain"}
 _ALLOWED_DIETS = {"veg", "non_veg", "eggetarian", "vegan"}
+_ALLOWED_WASH_FREQUENCY = {"daily", "2_3_times_week", "once_week", "less_than_once_week"}
+_ALLOWED_WATER_HARDNESS = {"soft", "moderately_hard", "hard", "very_hard", "not_sure"}
+_ALLOWED_SUGAR_INTAKE = {"none_or_very_little", "low", "moderate", "high", "very_high"}
+_ALLOWED_SEXUALLY_ACTIVE = {"yes", "no", "prefer_not_to_say"}
+_ALLOWED_FAMILY_HAIR_LOSS = {"yes", "no", "not_sure"}
+_ALLOWED_FAMILY_RELATION = {"father", "mother", "sibling", "grandparent", "multiple", "other"}
+_ALLOWED_DAIRY_INTAKE = {"none", "low", "moderate", "high", "very_high"}
 
 _ACTIVITY_ALIASES = {
     "sedentary": "sedentary",
@@ -68,49 +75,55 @@ _GENDER_ALIASES = {
     "girl": "female",
 }
 
-_ALLOWED_HAIR_WASH = {"daily", "2_3_times_week", "once_week", "less_once_week"}
-_ALLOWED_WATER = {"soft", "moderately_hard", "hard", "very_hard", "not_sure"}
-_ALLOWED_SUGAR = {"none_or_very_little", "low", "moderate", "high", "very_high"}
-_ALLOWED_SEXUAL = {"yes", "no", "prefer_not_to_say"}
-_ALLOWED_FAMILY_HAIR_LOSS = {"yes", "no", "not_sure"}
-_ALLOWED_DAIRY = {"none", "low", "moderate", "high", "very_high"}
-
 _TEXT_LIMITS = {
-    "gender": 30,
+    "name": 100,
     "city": 100,
-    "family_hair_loss_relation": 100,
+    "gender": 30,
+    "hair_wash_frequency": 40,
+    "water_hardness": 40,
+    "sugary_food_drink_intake": 40,
+    "sexually_active": 30,
+    "family_hair_loss": 20,
+    "family_hair_loss_relation": 50,
+    "dairy_intake": 40,
     "allergies": 1000,
     "medical_conditions": 1500,
     "food_dislikes": 1000,
 }
 
-_HAIR_WASH_ALIASES = {
-    "daily": "daily", "every day": "daily",
-    "2_3_times_week": "2_3_times_week", "2-3 times a week": "2_3_times_week",
-    "twice a week": "2_3_times_week", "three times a week": "2_3_times_week",
-    "once_week": "once_week", "once a week": "once_week", "weekly": "once_week",
-    "less_once_week": "less_once_week", "less than once a week": "less_once_week",
-}
-_WATER_ALIASES = {
-    "soft": "soft", "soft water": "soft",
-    "moderately_hard": "moderately_hard", "moderately hard": "moderately_hard", "moderately hard water": "moderately_hard",
-    "hard": "hard", "hard water": "hard",
-    "very_hard": "very_hard", "very hard": "very_hard", "very hard water": "very_hard",
-    "not_sure": "not_sure", "not sure": "not_sure", "unsure": "not_sure",
-}
-_SUGAR_ALIASES = {
-    "none_or_very_little": "none_or_very_little", "none": "none_or_very_little", "very little": "none_or_very_little",
-    "low": "low", "moderate": "moderate", "high": "high", "very_high": "very_high", "very high": "very_high",
-}
-_SEXUAL_ALIASES = {
-    "yes": "yes", "no": "no", "prefer_not_to_say": "prefer_not_to_say", "prefer not to say": "prefer_not_to_say",
-}
-_FAMILY_HAIR_LOSS_ALIASES = {
-    "yes": "yes", "no": "no", "not_sure": "not_sure", "not sure": "not_sure", "unsure": "not_sure",
-}
-_DAIRY_ALIASES = {
-    "none": "none", "low": "low", "moderate": "moderate", "high": "high",
-    "very_high": "very_high", "very high": "very_high",
+_HAIR_ENUMS = {
+    "hair_wash_frequency": ({
+        "everyday": "daily", "every day": "daily", "2-3 times a week": "2_3_times_week",
+        "2–3 times a week": "2_3_times_week", "twice a week": "2_3_times_week",
+        "2 to 3 times a week": "2_3_times_week", "once a week": "once_week",
+        "less than once a week": "less_than_once_week",
+    }, _ALLOWED_WASH_FREQUENCY),
+    "water_hardness": ({
+        "soft water": "soft", "moderately hard water": "moderately_hard",
+        "hard water": "hard", "very hard water": "very_hard", "unsure": "not_sure",
+        "i'm not sure": "not_sure", "i am not sure": "not_sure", "i don't know": "not_sure",
+    }, _ALLOWED_WATER_HARDNESS),
+    "sugary_food_drink_intake": ({
+        "none": "none_or_very_little", "none or very little": "none_or_very_little",
+        "very little": "none_or_very_little", "very high": "very_high", "medium": "moderate",
+    }, _ALLOWED_SUGAR_INTAKE),
+    "sexually_active": ({
+        "y": "yes", "n": "no", "prefer not to say": "prefer_not_to_say",
+        "prefer not": "prefer_not_to_say", "rather not say": "prefer_not_to_say",
+    }, _ALLOWED_SEXUALLY_ACTIVE),
+    "family_hair_loss": ({"unsure": "not_sure", "maybe": "not_sure", "not sure": "not_sure"}, _ALLOWED_FAMILY_HAIR_LOSS),
+    "family_hair_loss_relation": ({
+        "dad": "father", "mom": "mother", "mum": "mother", "brother": "sibling",
+        "sister": "sibling", "brother/sister": "sibling", "brother or sister": "sibling",
+        "sibling": "sibling", "grandparents": "grandparent",
+        "grandmother": "grandparent", "grandfather": "grandparent",
+        "multiple family members": "multiple", "both parents": "multiple", "someone else": "other",
+    }, _ALLOWED_FAMILY_RELATION),
+    "dairy_intake": ({
+        "no dairy": "none", "occasionally": "low", "sometimes": "low", "once a day": "moderate",
+        "daily": "moderate", "2-3 times a day": "high", "2 to 3 times a day": "high",
+        "very high": "very_high", "more than 3 times a day": "very_high",
+    }, _ALLOWED_DAIRY_INTAKE),
 }
 
 
@@ -153,7 +166,7 @@ def validate_extracted_fields(extracted: dict[str, Any]) -> dict[str, Any]:
     clean: dict[str, Any] = {}
 
     if "name" in extracted:
-        value = _clean_text(extracted["name"], 100)
+        value = _clean_text(extracted["name"], _TEXT_LIMITS["name"])
         if value:
             clean["name"] = value
 
@@ -183,6 +196,17 @@ def validate_extracted_fields(extracted: dict[str, Any]) -> dict[str, Any]:
                 number = None
             if number is not None and low <= number <= high:
                 clean[field] = round(number, 2)
+
+    if "city" in extracted:
+        value = _clean_text(extracted["city"], _TEXT_LIMITS["city"])
+        if value and value.casefold() not in {"skip", "prefer not to say"}:
+            clean["city"] = value
+
+    for field, (aliases, allowed) in _HAIR_ENUMS.items():
+        if field in extracted:
+            value = _normalize_enum(extracted[field], aliases, allowed)
+            if value:
+                clean[field] = value
 
     if "activity_level" in extracted:
         value = _normalize_enum(extracted["activity_level"], _ACTIVITY_ALIASES, _ALLOWED_ACTIVITY)
@@ -219,35 +243,5 @@ def validate_extracted_fields(extracted: dict[str, Any]) -> dict[str, Any]:
         value = _normalize_list_text(extracted["food_dislikes"], _TEXT_LIMITS["food_dislikes"])
         if value:
             clean["food_dislikes"] = value
-
-    if "city" in extracted:
-        value = _clean_text(extracted["city"], _TEXT_LIMITS["city"])
-        if value:
-            clean["city"] = value
-
-    for field, aliases, allowed in (
-        ("hair_wash_frequency", _HAIR_WASH_ALIASES, _ALLOWED_HAIR_WASH),
-        ("water_hardness", _WATER_ALIASES, _ALLOWED_WATER),
-        ("sugary_food_drink_frequency", _SUGAR_ALIASES, _ALLOWED_SUGAR),
-        ("sexually_active", _SEXUAL_ALIASES, _ALLOWED_SEXUAL),
-        ("family_hair_loss", _FAMILY_HAIR_LOSS_ALIASES, _ALLOWED_FAMILY_HAIR_LOSS),
-        ("dairy_intake", _DAIRY_ALIASES, _ALLOWED_DAIRY),
-    ):
-        if field in extracted:
-            value = _normalize_enum(extracted[field], aliases, allowed)
-            if value:
-                clean[field] = value
-
-    if "family_hair_loss_relation" in extracted:
-        value = _clean_text(extracted["family_hair_loss_relation"], _TEXT_LIMITS["family_hair_loss_relation"])
-        if value:
-            relation_aliases = {
-                "father": "father", "mother": "mother", "sibling": "sibling",
-                "brother": "sibling", "sister": "sibling",
-                "grandparent": "grandparent", "grandfather": "grandparent", "grandmother": "grandparent",
-                "multiple_family_members": "multiple_family_members",
-                "multiple family members": "multiple_family_members", "other": "other",
-            }
-            clean["family_hair_loss_relation"] = relation_aliases.get(value.casefold(), value)
 
     return clean

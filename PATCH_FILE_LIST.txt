@@ -1,0 +1,51 @@
+Hair & Scalp Assistant patch v2 — overlay manifest
+Apply to the ORIGINAL current-healthcare-weightlose repository root.
+Only files changed or added for the hair-assistant feature are listed.
+
+Modified files (33):
+  app/admin/service.py
+  app/admin/templates/base.html
+  app/admin/templates/dashboard.html
+  app/admin/templates/user_detail.html
+  app/knowledge/retrieval.py
+  app/knowledge/safety.py
+  app/llm/context.py
+  app/llm/conversation_schemas.py
+  app/llm/gemini_client.py
+  app/llm/prompts.py
+  app/llm/route_policy.py
+  app/llm/schemas.py
+  app/main.py
+  app/models.py
+  app/payments/razorpay_client.py
+  app/services/conversation_service.py
+  app/services/diet_plan_service.py
+  app/services/onboarding_extract.py
+  app/services/profile_validation.py
+  app/services/subscription_service.py
+  app/worker.py
+  data/sources/README.md
+  data/sources/external/authoritative_sources.json
+  scripts/build_knowledge_base.py
+  scripts/verify_release.py
+  tests/test_age_range_patch.py
+  tests/test_conversation_routing.py
+  tests/test_conversation_state.py
+  tests/test_dialogue_policy.py
+  tests/test_knowledge.py
+  tests/test_onboarding_extract.py
+  tests/test_onboarding_extraction.py
+  tests/test_response_context.py
+
+New files (8):
+  HAIR_ASSISTANT_PRODUCTION_PATCH_README.md
+  app/services/hair_care_plan_service.py
+  data/sources/external/hair_loss_guidelines.json
+  migrations/versions/0009_hair_loss_onboarding_profile.py
+  migrations/versions/0010_hair_care_plans.py
+  pytest.ini
+  tests/test_hair_assistant_release.py
+  tests/test_hair_onboarding_and_plan_contract.py
+
+No original files are deleted by this overlay.
+Do not deploy directly to production without backup, staging migration, KB rebuild, and live smoke tests; see HAIR_ASSISTANT_PRODUCTION_PATCH_README.md.

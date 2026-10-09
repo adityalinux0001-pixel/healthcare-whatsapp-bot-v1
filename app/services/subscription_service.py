@@ -112,11 +112,11 @@ async def prompt_payment(db: AsyncSession, user: User) -> None:
 
 def _payment_message(url: str) -> str:
     return (
-        f"Hello! I am your AI Health Assistant. 🌿\n\n"
-        f"Subscribe to the {settings.subscription_days}-day plan to get started "
+        f"Hello! I'm your Hair & Scalp Assistant. 🌿\n\n"
+        f"Subscribe for {settings.subscription_days} days of hair- and scalp-health guidance "
         f"— ₹{settings.subscription_price_inr} only:\n\n"
         f"{url}\n\n"
-        f"Once payment is completed, we can get started right away!"
+        f"After payment, you can ask questions about hair shedding, thinning, scalp care, and hair-care habits."
     )
 
 

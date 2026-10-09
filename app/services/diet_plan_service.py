@@ -13,7 +13,8 @@ from tenacity import RetryError
 from app.config import settings
 from app.database import AsyncSessionLocal
 from app.models import User, DietPlan, Message
-from app.llm.gemini_client import generate_diet_plan
+# The legacy generation implementation is retired. Keep the ORM/read helpers below
+# for historical DietPlan rows, but never import or invoke the old model generator.
 from app.services.plan_revision_policy import is_duplicate_modification
 from app.whatsapp.client import send_text_message, send_reply_buttons
 from app.utils.logging_config import logger
@@ -370,85 +371,14 @@ async def _send_plan(user: User, plan: DietPlan, *, prefer_text: bool = False) -
 
 
 async def generate_plan_for_user(user_id: int, *, prefer_text: bool = False) -> None:
-    """Create exactly one plan per user/IST day; retries never regenerate a saved plan."""
-    from app.services.subscription_service import get_active_subscription
-    from app.knowledge.safety import detect_high_risk_profile
+    """Deprecated compatibility handler; daily diet plans are retired.
 
-    async with AsyncSessionLocal() as db:
-        user: User | None = await db.get(User, user_id)
-        if not user or not user.onboarding_complete:
-            return
-
-        if user.age is not None and user.age < 18:
-            logger.warning("daily_plan_skipped_minor", user_id=user_id)
-            return
-
-        sub = await get_active_subscription(db, user)
-        if not sub:
-            return
-
-        # Starting a NEW day: the previous plan's check-in must be answered first,
-        # and (since no templates are used) the 24h free-form window must be open.
-        today_plan_id = await db.scalar(
-            select(DietPlan.id).where(DietPlan.user_id == user.id, DietPlan.plan_date == _plan_day_utc())
-        )
-        if today_plan_id is None:
-            latest = await _latest_plan(db, user.id)
-            if latest and latest.delivery_status == "sent" and latest.checkin_status == CHECKIN_PENDING:
-                logger.info(
-                    "daily_plan_skipped_checkin_pending",
-                    user_id=user_id,
-                    pending_day_number=latest.day_number,
-                )
-                return
-            if not _service_window_open(await _last_inbound_at(db, user.id)):
-                logger.info("daily_plan_deferred_window_closed", user_id=user_id)
-                return
-            if latest and latest.delivery_status == "awaiting_window" and latest.content:
-                # An earlier generated plan never reached the user -> deliver that one first.
-                await _send_plan(user, latest, prefer_text=prefer_text)
-                return
-
-        plan, created = await _claim_today_plan(db, user, sub.id)
-
-        if plan.delivery_status in {"sent", "unknown"}:
-            return
-
-        if not created and plan.content:
-            await _send_plan(user, plan, prefer_text=prefer_text)
-            return
-
-        high_risk = detect_high_risk_profile(user.profile_dict())
-        if high_risk:
-            logger.warning(
-                "daily_plan_blocked_high_risk_profile",
-                user_id=user_id,
-                reason=high_risk,
-            )
-            from app.knowledge.safety import high_risk_profile_message
-            await send_text_message(user.phone_number, high_risk_profile_message())
-            return
-
-        recent = await _recent_meals(db, user_id)
-
-        plan_text = await generate_diet_plan(
-            user.profile_dict(),
-            recent,
-            summary=user.conversation_summary,
-            day_number=plan.day_number,
-        )
-
-        plan.content = plan_text
-        await db.commit()
-        await db.refresh(plan)
-
-    await _send_plan(user, plan, prefer_text=prefer_text)
-    logger.info(
-        "diet_plan_processed",
-        user_id=user_id,
-        day_number=plan.day_number,
-        created=created,
-    )
+    This no-op is intentionally kept under the old function name so delayed ARQ jobs
+    from a rolling deployment cannot generate or send a weight-loss plan to a hair-assistant
+    user. Historical DietPlan rows are not modified or deleted.
+    """
+    logger.warning("legacy_diet_plan_job_skipped_hair_assistant", user_id=user_id)
+    return
 
 
 async def revise_today_plan(
@@ -456,113 +386,20 @@ async def revise_today_plan(
     user: User,
     modification_instruction: str,
 ) -> PlanRevisionResult:
-    """Revise today's existing plan only when explicitly requested by the user."""
-    from app.knowledge.safety import detect_high_risk_profile
+    """Deprecated safety guard: legacy diet-plan revision is disabled.
 
-    if not modification_instruction.strip():
-        return PlanRevisionResult(plan=None)
-
-    today = _plan_day_utc()
-
-    plan = await db.scalar(
-        select(DietPlan)
-        .where(
-            DietPlan.user_id == user.id,
-            DietPlan.plan_date == today,
-        )
-        .with_for_update()
-    )
-
-    if not plan or not plan.content:
-        return PlanRevisionResult(plan=None)
-
-    # Do not modify a plan while delivery is in progress or its external outcome
-    # is unknown. The explicit request can safely be retried later.
-    if plan.delivery_status in {"sending", "unknown"}:
-        return PlanRevisionResult(plan=None)
-
-    high_risk = detect_high_risk_profile(user.profile_dict())
-    if high_risk:
-        logger.warning(
-            "today_plan_revision_blocked_high_risk_profile",
-            user_id=user.id,
-            reason=high_risk,
-        )
-        return PlanRevisionResult(plan=None)  # caller sends its own fallback reply
-
-    now = datetime.now(timezone.utc)
-    if is_duplicate_modification(
-        plan.last_modification_instruction, plan.last_modified_at, modification_instruction, now
-    ):
-        logger.info(
-            "today_plan_revision_duplicate_skipped",
-            user_id=user.id,
-            day_number=plan.day_number,
-        )
-        return PlanRevisionResult(plan=plan, is_duplicate=True)
-
-    recent = await _recent_meals(db, user.id)
-
-    plan_text = await generate_diet_plan(
-        user.profile_dict(),
-        recent,
-        summary=user.conversation_summary,
-        day_number=plan.day_number,
-        modification_instruction=modification_instruction,
-   
-        current_plan_text=plan.content,
-    )
-
-
-    plan.content = plan_text
-    plan.delivery_status = "pending"
-    plan.sent_at = None
-    plan.send_attempts = 0
-    plan.last_send_error = None
-    plan.provider_message_id = None
-    plan.last_modification_instruction = modification_instruction
-    plan.last_modified_at = now
-
-    await db.commit()
-    await db.refresh(plan)
-
-    logger.info(
-        "today_plan_revised",
-        user_id=user.id,
-        day_number=plan.day_number,
-    )
-
-    return PlanRevisionResult(plan=plan)
+    Keep the function signature for compatibility with already-deployed code, but
+    never modify historical diet plans after the product has switched to hair/scalp
+    guidance. Existing plan rows remain available for audit/history.
+    """
+    logger.warning("legacy_diet_plan_revision_skipped_hair_assistant", user_id=user.id)
+    return PlanRevisionResult(plan=None)
 
 
 async def generate_and_send_daily_plans() -> None:
-    from app.redis_client import get_arq_pool
-
-    async with AsyncSessionLocal() as db:
-  
-        last_inbound = (
-            select(Message.user_id.label("uid"), func.max(Message.created_at).label("last_in"))
-            .where(Message.role == "user")
-            .group_by(Message.user_id)
-            .subquery()
-        )
-        result = await db.execute(
-            select(User.id)
-            .outerjoin(last_inbound, last_inbound.c.uid == User.id)
-            .where(
-                User.onboarding_complete.is_(True),
-                User.age >= 18,
-            )
-            .order_by(last_inbound.c.last_in.asc().nullsfirst())
-        )
-        user_ids = [row[0] for row in result.all()]
-
-    pool = await get_arq_pool()
-
-    for uid in user_ids:
-        await pool.enqueue_job("generate_diet_plan_for_user", uid)
-
-    logger.info("daily_plan_jobs_queued", count=len(user_ids))
+    """Deprecated no-op retained for compatibility with older scheduled invocations."""
+    logger.info("legacy_daily_diet_plan_scheduler_disabled")
+    return
 
 
 async def get_historical_plan(
