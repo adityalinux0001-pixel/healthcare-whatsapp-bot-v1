@@ -45,12 +45,12 @@ QUESTIONS: dict[str, str] = {
         example="2",
     ),
     "water_hardness": _menu(
-        "Question 3 of 7: What type of water do you usually use to wash your hair?",
+        "• What type of water do you usually use to wash your hair?",
         ["Soft water", "Moderately hard water", "Hard water", "Very hard water", "I'm not sure"],
         example="5",
     ),
     "height_cm": (
-        "*Question 4 of 7: What are your current height and weight?*\n\n"
+        "*Question 3 of 7: What are your current height and weight?*\n\n"
         "• Height: ___ cm / ft & inches\n• Weight: ___ kg / lbs\n\n"
         "👉 Reply in *one message* and *always write the units*. Examples:\n"
         "170 cm, 65 kg\n"
@@ -62,13 +62,13 @@ QUESTIONS: dict[str, str] = {
         "👉 Reply with the number *and the unit*. Examples: 65 kg or 143 lbs"
     ),
     "sugary_food_drink_intake": _menu(
-        "Question 5 of 7: How much sugary food or drinks do you normally consume?",
+        "Question 4 of 7: How much sugary food or drinks do you normally consume?",
         ["None or very little", "Low", "Moderate", "High", "Very high"],
         example="3",
         note="Examples: sweets, desserts, sugary tea/coffee, soft drinks, packaged juices, etc.",
     ),
     "sexually_active": _menu(
-        "• Are you currently sexually active?",
+        "Question 5 of 7: Are you currently sexually active?",
         ["Yes", "No", "Prefer not to say"],
         example="3",
     ),
